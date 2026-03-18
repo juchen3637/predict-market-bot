@@ -28,6 +28,10 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
+# Load .env so all subprocess children inherit credentials
+from dotenv import load_dotenv  # noqa: E402
+load_dotenv(_PROJECT_ROOT / ".env")
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
