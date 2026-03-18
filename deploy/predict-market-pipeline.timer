@@ -1,0 +1,12 @@
+[Unit]
+Description=Predict Market Bot — Pipeline Timer (every 15 minutes)
+Requires=predict-market-pipeline.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+AccuracySec=30s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

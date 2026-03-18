@@ -1,0 +1,17 @@
+[Unit]
+Description=Predict Market Bot — Nightly Consolidation
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ssm-user
+WorkingDirectory=/home/ssm-user/.openclaw/workspaces/predict-market-bot
+EnvironmentFile=/home/ssm-user/.openclaw/workspaces/predict-market-bot/.env
+ExecStart=/home/ssm-user/.openclaw/workspaces/predict-market-bot/.venv/bin/python skills/pm-compound/scripts/consolidate.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=predict-market-nightly
+
+[Install]
+WantedBy=multi-user.target

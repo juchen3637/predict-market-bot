@@ -1,0 +1,80 @@
+{
+  "title": "Predict Market Bot",
+  "uid": "predict-market-bot",
+  "version": 1,
+  "schemaVersion": 38,
+  "refresh": "1m",
+  "time": {"from": "now-24h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Win Rate",
+      "type": "stat",
+      "gridPos": {"x": 0, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "trading_bot_win_rate", "legendFormat": "Win Rate", "datasource": "Prometheus"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 0.55, "color": "yellow"}, {"value": 0.60, "color": "green"}]}}}
+    },
+    {
+      "id": 2,
+      "title": "Sharpe Ratio",
+      "type": "stat",
+      "gridPos": {"x": 4, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "trading_bot_sharpe_ratio", "legendFormat": "Sharpe", "datasource": "Prometheus"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 2, "thresholds": {"steps": [{"value": 0, "color": "red"}, {"value": 1.0, "color": "yellow"}, {"value": 2.0, "color": "green"}]}}}
+    },
+    {
+      "id": 3,
+      "title": "Max Drawdown",
+      "type": "gauge",
+      "gridPos": {"x": 8, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "trading_bot_max_drawdown", "legendFormat": "Drawdown", "datasource": "Prometheus"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}},
+      "fieldConfig": {"defaults": {"unit": "percentunit", "min": 0, "max": 0.10, "thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 0.05, "color": "yellow"}, {"value": 0.08, "color": "red"}]}}}
+    },
+    {
+      "id": 4,
+      "title": "Open Positions",
+      "type": "stat",
+      "gridPos": {"x": 12, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "trading_bot_open_positions", "legendFormat": "Open", "datasource": "Prometheus"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "value"},
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 5,
+      "title": "Daily AI Cost",
+      "type": "stat",
+      "gridPos": {"x": 16, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "trading_bot_ai_cost_daily_usd", "legendFormat": "AI Cost", "datasource": "Prometheus"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 20, "color": "yellow"}, {"value": 30, "color": "red"}]}}}
+    },
+    {
+      "id": 6,
+      "title": "Daily P&L",
+      "type": "stat",
+      "gridPos": {"x": 20, "y": 0, "w": 4, "h": 4},
+      "targets": [{"expr": "trading_bot_daily_pnl_usd", "legendFormat": "Daily P&L", "datasource": "Prometheus"}],
+      "options": {"reduceOptions": {"calcs": ["lastNotNull"]}, "colorMode": "background"},
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "thresholds": {"steps": [{"value": -100, "color": "red"}, {"value": 0, "color": "yellow"}, {"value": 10, "color": "green"}]}}}
+    },
+    {
+      "id": 7,
+      "title": "P&L Over Time",
+      "type": "timeseries",
+      "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+      "targets": [{"expr": "trading_bot_daily_pnl_usd", "legendFormat": "Daily P&L (USD)", "datasource": "Prometheus"}],
+      "fieldConfig": {"defaults": {"unit": "currencyUSD", "custom": {"fillOpacity": 10}}}
+    },
+    {
+      "id": 8,
+      "title": "Brier Score",
+      "type": "timeseries",
+      "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+      "targets": [{"expr": "trading_bot_brier_score", "legendFormat": "Brier Score", "datasource": "Prometheus"}],
+      "fieldConfig": {"defaults": {"unit": "short", "decimals": 4, "custom": {"fillOpacity": 5}, "thresholds": {"steps": [{"value": 0, "color": "green"}, {"value": 0.25, "color": "yellow"}, {"value": 0.30, "color": "red"}]}}}
+    }
+  ]
+}

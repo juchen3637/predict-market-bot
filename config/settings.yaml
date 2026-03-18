@@ -1,0 +1,58 @@
+# =============================================================================
+# predict-market-bot — Configuration
+# All runtime parameters. No secrets here — use .env for those.
+# =============================================================================
+
+pipeline:
+  scan_interval_minutes: 15          # How often the scanner runs
+  research_parallel_workers: 5       # Parallel research agents per candidate
+  min_scan_candidates: 1             # Skip research/predict if scan finds fewer
+  max_pipeline_cycles_per_day: 48    # Safety cap (every 30 min = 48/day)
+
+scan:
+  min_volume_contracts: 200          # Minimum open interest to consider
+  max_days_to_expiry: 30             # Ignore markets resolving after this
+  min_open_interest: 50              # Minimum open interest contracts (liquidity_dollars not populated by Kalshi API)
+  anomaly_price_move_pct: 0.10       # Flag if price moved >10% recently
+  anomaly_spread_cents: 0.05         # Flag if bid-ask spread >5 cents
+  anomaly_volume_spike_multiplier: 3 # Flag if volume > 3x 7-day average
+
+research:
+  max_source_chars: 2000             # Truncate scraped content to this length
+  min_sources_required: 2            # Skip market if fewer sources available
+  sentiment_confidence_threshold: 0.6 # Minimum confidence to trust sentiment
+
+predict:
+  min_edge_to_signal: 0.04           # Only signal when model - market > 4%
+  min_ensemble_agreement: 2          # Minimum models that must agree (out of 3)
+  brier_window_days: 30              # Rolling window for Brier Score
+  brier_alert_threshold: 0.30        # Alert if Brier exceeds this
+  llm_weights:
+    claude_sonnet: 0.40     # claude-sonnet-4-6
+    gpt5_mini: 0.35         # gpt-5-mini-2025-08-07
+    gemini_flash: 0.25      # gemini-2.5-flash
+
+risk:
+  kelly_fraction: 0.25               # Fractional Kelly multiplier (0.25 = quarter-Kelly)
+  max_position_pct_bankroll: 0.05    # Max 5% of bankroll per position
+  max_concurrent_positions: 15       # Max open positions at once
+  max_drawdown_pct: 0.08             # Kill switch at 8% drawdown
+  max_daily_loss_pct: 0.15           # Stop trading for day at 15% daily loss
+  max_slippage_pct: 0.02             # Abort order if slippage exceeds 2%
+  var_confidence: 0.95               # VaR at 95% confidence
+  use_limit_orders_only: true
+
+execution:
+  order_timeout_seconds: 300         # Cancel unfilled order after 300s
+  hedge_trigger_price_move: 0.05     # Auto-hedge if position moves >5% against us
+  kill_switch_file: ./STOP           # Create this file to halt all trading
+  take_profit_pct: 0.15              # Exit position when up 15%
+
+compound:
+  nightly_consolidation_hour: 23     # Hour (24h) to run nightly review
+  min_trades_for_brier_calc: 10      # Need at least this many resolved trades
+
+cost_control:
+  max_daily_ai_cost_usd: 30          # Overridden by MAX_DAILY_AI_COST_USD env var
+  alert_threshold_pct: 0.80
+  heartbeat_interval_minutes: 5      # Health check frequency

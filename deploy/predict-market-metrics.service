@@ -1,0 +1,19 @@
+[Unit]
+Description=Predict Market Bot — Prometheus Metrics Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ssm-user
+WorkingDirectory=/home/ssm-user/.openclaw/workspaces/predict-market-bot
+EnvironmentFile=/home/ssm-user/.openclaw/workspaces/predict-market-bot/.env
+ExecStart=/home/ssm-user/.openclaw/workspaces/predict-market-bot/.venv/bin/python metrics_server.py
+Restart=on-failure
+RestartSec=30s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=predict-market-metrics
+
+[Install]
+WantedBy=multi-user.target

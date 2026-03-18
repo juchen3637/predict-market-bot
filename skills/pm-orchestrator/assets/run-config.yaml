@@ -1,0 +1,22 @@
+# Runtime configuration — edit here without touching code
+# Overrides settings.yaml for live operational tuning
+
+active: true
+mode: paper                          # paper | live
+
+scan_interval_minutes: 15
+kelly_fraction: 0.25                 # Start conservative; increase after 50+ profitable trades
+max_daily_ai_cost_usd: 30
+
+# Set to true to disable a specific stage (for debugging)
+stages:
+  scan: true
+  research: true
+  predict: true
+  risk: true
+  compound: true
+
+# Platform enablement
+platforms:
+  polymarket: true
+  kalshi: true

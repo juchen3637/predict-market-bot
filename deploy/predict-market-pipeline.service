@@ -1,0 +1,17 @@
+[Unit]
+Description=Predict Market Bot — Pipeline Cycle
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ssm-user
+WorkingDirectory=/home/ssm-user/.openclaw/workspaces/predict-market-bot
+EnvironmentFile=/home/ssm-user/.openclaw/workspaces/predict-market-bot/.env
+ExecStart=/home/ssm-user/.openclaw/workspaces/predict-market-bot/.venv/bin/python run_pipeline.py
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=predict-market-pipeline
+
+[Install]
+WantedBy=multi-user.target

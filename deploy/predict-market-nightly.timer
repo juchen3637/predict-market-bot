@@ -1,0 +1,11 @@
+[Unit]
+Description=Predict Market Bot — Nightly Consolidation Timer (23:00 UTC daily)
+Requires=predict-market-nightly.service
+
+[Timer]
+OnCalendar=*-*-* 23:00:00 UTC
+AccuracySec=60s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
