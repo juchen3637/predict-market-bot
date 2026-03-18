@@ -28,9 +28,11 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 
-# Load .env so all subprocess children inherit credentials
+# Load .env so all subprocess children inherit credentials.
+# override=True ensures .env always wins over systemd EnvironmentFile=,
+# which can mangle multi-line values like RSA private keys.
 from dotenv import load_dotenv  # noqa: E402
-load_dotenv(_PROJECT_ROOT / ".env")
+load_dotenv(_PROJECT_ROOT / ".env", override=True)
 
 # ---------------------------------------------------------------------------
 # Paths
