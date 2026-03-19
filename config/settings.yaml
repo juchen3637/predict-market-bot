@@ -8,6 +8,11 @@ pipeline:
   research_parallel_workers: 5       # Parallel research agents per candidate
   min_scan_candidates: 1             # Skip research/predict if scan finds fewer
   max_pipeline_cycles_per_day: 48    # Safety cap (every 30 min = 48/day)
+  stage_timeouts:
+    scan: 120
+    research: 600
+    predict: 1200                    # bumped — LLM ensemble over 26+ markets
+    risk: 300
 
 scan:
   min_volume_contracts: 200          # Minimum open interest to consider
@@ -21,6 +26,8 @@ research:
   max_source_chars: 2000             # Truncate scraped content to this length
   min_sources_required: 2            # Skip market if fewer sources available
   sentiment_confidence_threshold: 0.6 # Minimum confidence to trust sentiment
+  cache_ttl_hours: 4                 # Cache research results for this many hours
+  search_provider: "brave"           # "brave" | "tavily"
 
 predict:
   min_edge_to_signal: 0.04           # Only signal when model - market > 4%

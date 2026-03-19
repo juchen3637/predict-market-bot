@@ -205,6 +205,7 @@ def _run_stage(
     extra_args: list[str] | None = None,
     stdin_data: bytes | None = None,
     dry_run: bool = False,
+    timeout: int = 600,
 ) -> tuple[bytes, int]:
     """
     Run a pipeline stage script as a subprocess.
@@ -223,7 +224,7 @@ def _run_stage(
         cmd,
         input=stdin_data,
         capture_output=True,
-        timeout=600,
+        timeout=timeout,
     )
 
     if result.stderr:
@@ -267,6 +268,26 @@ def _rotate_logs(logger: logging.Logger) -> None:
             continue
 
 
+def _rotate_research_cache(logger: logging.Logger, settings: dict) -> None:
+    """Delete research cache files older than 2 × cache_ttl_hours."""
+    from datetime import timedelta
+    ttl_hours = settings.get("research", {}).get("cache_ttl_hours", 4)
+    cache_max_age = timedelta(hours=ttl_hours * 2)
+    cache_dir = DATA_DIR / "research_cache"
+    if not cache_dir.exists():
+        return
+    for cache_file in cache_dir.glob("*.json"):
+        try:
+            age = datetime.now(timezone.utc) - datetime.fromtimestamp(
+                cache_file.stat().st_mtime, tz=timezone.utc
+            )
+            if age > cache_max_age:
+                cache_file.unlink(missing_ok=True)
+                logger.debug("Rotated stale cache entry: %s", cache_file.name)
+        except OSError:
+            continue
+
+
 def _rotate_data_files(logger: logging.Logger) -> None:
     """Delete scan data files older than 7 days."""
     from datetime import timedelta
@@ -295,6 +316,7 @@ def run_pipeline(dry_run: bool = False) -> int:
     Returns:
         0 on success, 1 on failure.
     """
+    import yaml
     logger = _setup_logging()
     now = datetime.now(timezone.utc).isoformat()
     state = _load_state()
@@ -302,9 +324,20 @@ def run_pipeline(dry_run: bool = False) -> int:
 
     logger.info("=== Pipeline cycle starting (dry_run=%s) ===", dry_run)
 
+    settings: dict = {}
+    settings_path = _PROJECT_ROOT / "config" / "settings.yaml"
+    try:
+        with open(settings_path) as _sf:
+            settings = yaml.safe_load(_sf)
+    except Exception:
+        pass
+
+    stage_timeouts = settings.get("pipeline", {}).get("stage_timeouts", {})
+
     # Rotate old files
     _rotate_logs(logger)
     _rotate_data_files(logger)
+    _rotate_research_cache(logger, settings)
 
     # Pre-flight checks
     if _run_preflight(logger):
@@ -314,7 +347,10 @@ def run_pipeline(dry_run: bool = False) -> int:
     ts = _ts()
 
     # ---- Stage 1: Scan ----
-    scan_out, rc = _run_stage(logger, SCAN_SCRIPT, dry_run=dry_run)
+    scan_out, rc = _run_stage(
+        logger, SCAN_SCRIPT, dry_run=dry_run,
+        timeout=stage_timeouts.get("scan", 120),
+    )
     if rc != 0 or not _validate_json_output(scan_out, "scan", logger):
         logger.error("Scan stage failed (rc=%d)", rc)
         state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
@@ -334,6 +370,7 @@ def run_pipeline(dry_run: bool = False) -> int:
         RESEARCH_SCRIPT,
         extra_args=["--input", str(scan_file)],
         dry_run=dry_run,
+        timeout=stage_timeouts.get("research", 600),
     )
     if rc != 0 or not _validate_json_output(research_out, "research", logger):
         logger.error("Research stage failed (rc=%d)", rc)
@@ -352,6 +389,7 @@ def run_pipeline(dry_run: bool = False) -> int:
         PREDICT_SCRIPT,
         extra_args=["--input", str(enriched_file)],
         dry_run=dry_run,
+        timeout=stage_timeouts.get("predict", 1200),
     )
     if rc != 0 or not _validate_json_output(predict_out, "predict", logger):
         logger.error("Predict stage failed (rc=%d)", rc)
@@ -370,6 +408,7 @@ def run_pipeline(dry_run: bool = False) -> int:
         RISK_SCRIPT,
         extra_args=["--file", str(signals_file)],
         dry_run=dry_run,
+        timeout=stage_timeouts.get("risk", 300),
     )
     if rc != 0:
         logger.error("Risk stage failed (rc=%d)", rc)

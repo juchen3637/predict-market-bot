@@ -54,6 +54,46 @@ from scrape_sources import scrape_all  # noqa: E402
 # Configuration
 # ---------------------------------------------------------------------------
 
+DATA_DIR = _PROJECT_ROOT / "data"
+CACHE_DIR = DATA_DIR / "research_cache"
+
+
+# ---------------------------------------------------------------------------
+# Research Cache
+# ---------------------------------------------------------------------------
+
+def _cache_path(market_id: str) -> Path:
+    slug = market_id.replace("/", "_")[:40]
+    return CACHE_DIR / f"{slug}.json"
+
+
+def _load_cache(market_id: str, ttl_hours: float) -> dict | None:
+    """Return cached entry if it exists and is within TTL, else None."""
+    path = _cache_path(market_id)
+    if not path.exists():
+        return None
+    try:
+        entry = json.loads(path.read_text())
+        cached_at = datetime.fromisoformat(entry["cached_at"])
+        age = datetime.now(timezone.utc) - cached_at
+        if age.total_seconds() < ttl_hours * 3600:
+            return entry
+    except (json.JSONDecodeError, KeyError, ValueError):
+        pass
+    return None
+
+
+def _save_cache(market_id: str, scrape_result: dict, sentiment: dict) -> None:
+    CACHE_DIR.mkdir(exist_ok=True)
+    path = _cache_path(market_id)
+    entry = {
+        "market_id": market_id,
+        "cached_at": datetime.now(timezone.utc).isoformat(),
+        "scrape_result": scrape_result,
+        "sentiment": sentiment,
+    }
+    path.write_text(json.dumps(entry))
+
 def load_settings() -> dict[str, Any]:
     settings_path = _PROJECT_ROOT / "config" / "settings.yaml"
     with open(settings_path) as f:
@@ -97,10 +137,12 @@ def process_candidate(
     candidate: dict[str, Any],
     min_sources_required: int,
     confidence_threshold: float,
+    ttl_hours: float = 4.0,
 ) -> dict[str, Any]:
     """
     Run scrape → classify → gap analysis for one candidate.
     Returns enriched candidate dict matching the SKILL.md output schema.
+    Cache hit skips scrape and classify entirely.
     """
     market_id = candidate["market_id"]
     title = candidate["title"]
@@ -108,69 +150,81 @@ def process_candidate(
 
     base = {**candidate}  # preserve all scan fields (days_to_expiry, volume_24h, etc.)
 
-    # --- Scrape ---
-    try:
-        sources_data = scrape_all(title)
-    except Exception as exc:
+    # --- Cache check ---
+    cached = _load_cache(market_id, ttl_hours)
+    if cached:
+        sources_data = cached["scrape_result"]
+        sentiment_dict = cached["sentiment"]
         print(
-            f"[pm-research] scrape_all failed for {market_id}: {exc}",
+            f"[pm-research] {market_id}: cache hit (age < {ttl_hours}h)",
             file=sys.stderr,
         )
-        return {
-            **base,
-            "sentiment": None,
-            "gap_analysis": None,
-            "research_skipped": True,
-            "skip_reason": f"scrape error: {exc}",
-        }
+    else:
+        # --- Scrape ---
+        try:
+            sources_data = scrape_all(title)
+        except Exception as exc:
+            print(
+                f"[pm-research] scrape_all failed for {market_id}: {exc}",
+                file=sys.stderr,
+            )
+            return {
+                **base,
+                "sentiment": None,
+                "gap_analysis": None,
+                "research_skipped": True,
+                "skip_reason": f"scrape error: {exc}",
+            }
 
-    source_count = sources_data.get("source_count", 0)
+        source_count = sources_data.get("source_count", 0)
 
-    # --- Quality gate: minimum sources ---
-    if source_count < min_sources_required:
-        print(
-            f"[pm-research] {market_id}: only {source_count} sources "
-            f"(need {min_sources_required}) — skipping",
-            file=sys.stderr,
-        )
-        return {
-            **base,
-            "sentiment": None,
-            "gap_analysis": None,
-            "research_skipped": True,
-            "skip_reason": f"insufficient sources: {source_count} < {min_sources_required}",
-        }
+        # --- Quality gate: minimum sources ---
+        if source_count < min_sources_required:
+            print(
+                f"[pm-research] {market_id}: only {source_count} sources "
+                f"(need {min_sources_required}) — skipping",
+                file=sys.stderr,
+            )
+            return {
+                **base,
+                "sentiment": None,
+                "gap_analysis": None,
+                "research_skipped": True,
+                "skip_reason": f"insufficient sources: {source_count} < {min_sources_required}",
+            }
 
-    # --- Classify ---
-    try:
-        sources_list = sources_data.get("sources", [])
-        sentiment_result = classify(sources_list, title)
-    except Exception as exc:
-        print(
-            f"[pm-research] classify failed for {market_id}: {exc}",
-            file=sys.stderr,
-        )
-        return {
-            **base,
-            "sentiment": None,
-            "gap_analysis": None,
-            "research_skipped": True,
-            "skip_reason": f"classify error: {exc}",
-        }
+        # --- Classify ---
+        try:
+            sources_list = sources_data.get("sources", [])
+            sentiment_result = classify(sources_list, title)
+        except Exception as exc:
+            print(
+                f"[pm-research] classify failed for {market_id}: {exc}",
+                file=sys.stderr,
+            )
+            return {
+                **base,
+                "sentiment": None,
+                "gap_analysis": None,
+                "research_skipped": True,
+                "skip_reason": f"classify error: {exc}",
+            }
 
-    sentiment_dict = asdict(sentiment_result)
+        sentiment_dict = asdict(sentiment_result)
+        _save_cache(market_id, sources_data, sentiment_dict)
 
     # --- Quality gate: confidence threshold (flag, don't skip) ---
-    low_confidence = sentiment_result.confidence < confidence_threshold
+    confidence = sentiment_dict.get("confidence", 0.0)
+    low_confidence = confidence < confidence_threshold
     if low_confidence:
         print(
             f"[pm-research] {market_id}: low confidence "
-            f"({sentiment_result.confidence:.2f} < {confidence_threshold}) — flagged",
+            f"({confidence:.2f} < {confidence_threshold}) — flagged",
             file=sys.stderr,
         )
 
     # --- Gap analysis ---
-    gap = compute_gap_analysis(sentiment_result.score, current_yes_price)
+    gap = compute_gap_analysis(sentiment_dict.get("score", 0.0), current_yes_price)
 
     return {
         **base,
@@ -201,6 +255,7 @@ def main() -> None:
     research_cfg = settings["research"]
     min_sources_required: int = research_cfg["min_sources_required"]
     confidence_threshold: float = research_cfg["sentiment_confidence_threshold"]
+    ttl_hours: float = float(research_cfg.get("cache_ttl_hours", 4))
 
     # Read pm-scan output from --input file or stdin
     try:
@@ -229,7 +284,7 @@ def main() -> None:
     for i, candidate in enumerate(candidates, 1):
         market_id = candidate.get("market_id", f"unknown_{i}")
         print(f"[pm-research] [{i}/{len(candidates)}] {market_id}", file=sys.stderr)
-        enriched = process_candidate(candidate, min_sources_required, confidence_threshold)
+        enriched = process_candidate(candidate, min_sources_required, confidence_threshold, ttl_hours)
         enriched_candidates.append(enriched)
 
     output = {

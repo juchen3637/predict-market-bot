@@ -189,6 +189,66 @@ def scrape_brave(query: str) -> SourceResult:
 
 
 # ---------------------------------------------------------------------------
+# Tavily Search Scraper
+# ---------------------------------------------------------------------------
+
+def scrape_tavily(query: str) -> SourceResult:
+    """
+    Fetch web search results via Tavily Search API.
+    Requires TAVILY_API_KEY environment variable.
+    Docs: https://docs.tavily.com/docs/rest-api/api-reference
+    """
+    api_key = os.environ.get("TAVILY_API_KEY", "")
+    if not api_key:
+        return SourceResult(source="tavily", content="", item_count=0, error="no_api_key")
+    try:
+        import httpx
+
+        resp = httpx.post(
+            "https://api.tavily.com/search",
+            json={"query": query, "max_results": 5, "search_depth": "basic"},
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15,
+        )
+        if resp.status_code == 429:
+            return SourceResult(source="tavily", content="", item_count=0, error="rate_limited")
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        content = "\n\n".join(
+            f"{r.get('title', '')}: {r.get('content', '')[:400]}" for r in results[:5]
+        )
+        clean = sanitize_content(content, "tavily")
+        if clean is None:
+            return SourceResult(source="tavily", content="", item_count=0, error="injection_detected")
+        clean = clean[:MAX_SOURCE_CHARS]
+        return SourceResult(source="tavily", content=clean, item_count=len(results), error=None)
+    except Exception as e:
+        return SourceResult(source="tavily", content="", item_count=0, error=str(e)[:80])
+
+
+# ---------------------------------------------------------------------------
+# Web Search Dispatcher
+# ---------------------------------------------------------------------------
+
+def scrape_web(query: str) -> SourceResult:
+    """Route to configured search provider (SEARCH_PROVIDER env), fall back to LLM if provider fails."""
+    provider = os.environ.get("SEARCH_PROVIDER", "brave").lower()
+    if provider == "tavily":
+        result = scrape_tavily(query)
+    else:
+        result = scrape_brave(query)
+
+    if result.error or result.item_count == 0:
+        print(
+            f"[pm-research] {provider} failed ({result.error}) — using LLM fallback",
+            file=sys.stderr,
+        )
+        return _scrape_llm_fallback(query)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # LLM Web Search Fallback
 # ---------------------------------------------------------------------------
 
@@ -345,7 +405,7 @@ def scrape_all(market_title: str) -> dict[str, Any]:
     query = " ".join(market_title.split()[:8])
 
     results = [
-        scrape_brave(query),
+        scrape_web(query),
         scrape_rss(query, RSS_FEEDS),
         scrape_reddit(query),
     ]
