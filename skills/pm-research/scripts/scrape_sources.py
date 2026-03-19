@@ -21,6 +21,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -30,6 +32,29 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).resolve().parents[3] / ".env", override=False)
 
 MAX_SOURCE_CHARS = 2000  # Hard cap per source — NEVER increase without security review
+
+# ---------------------------------------------------------------------------
+# Reddit Rate Limiter (10 req/min ceiling)
+# ---------------------------------------------------------------------------
+
+_REDDIT_LOCK = threading.Lock()
+_REDDIT_LAST_CALL: float = 0.0
+_REDDIT_MIN_INTERVAL = 6.1  # 10 req/min = 1 per 6s, +0.1s margin
+
+# Subreddits: core (calibrated probability) + sentiment (event detection)
+_REDDIT_SUBREDDITS = "Metaculus+polymarket+PredictIt+worldnews+politics"
+_REDDIT_CORE_SUBS = {"metaculus", "polymarket", "predictit"}
+
+
+def _reddit_throttle() -> None:
+    """Ensure at most ~10 Reddit requests per minute, thread-safe."""
+    global _REDDIT_LAST_CALL
+    with _REDDIT_LOCK:
+        elapsed = time.monotonic() - _REDDIT_LAST_CALL
+        wait = _REDDIT_MIN_INTERVAL - elapsed
+        if wait > 0:
+            time.sleep(wait)
+        _REDDIT_LAST_CALL = time.monotonic()
 
 # Patterns that indicate possible prompt injection attempts
 INJECTION_PATTERNS = [
@@ -67,7 +92,7 @@ RSS_FEEDS = [
 
 @dataclass
 class SourceResult:
-    source: str          # "brave" | "rss"
+    source: str          # "brave" | "rss" | "reddit"
     content: str         # Sanitized, length-capped text
     item_count: int      # Number of results/articles found
     error: str | None    # Error message if fetch failed
@@ -247,6 +272,70 @@ def scrape_rss(query: str, feed_urls: list[str]) -> SourceResult:
 
 
 # ---------------------------------------------------------------------------
+# Reddit Scraper
+# ---------------------------------------------------------------------------
+
+def scrape_reddit(query: str) -> SourceResult:
+    """
+    Fetch Reddit posts via the JSON API across prediction-market and news subreddits.
+    Uses a module-level rate limiter to stay under the 10 req/min ceiling.
+
+    Subreddits:
+      core     — r/Metaculus, r/polymarket, r/PredictIt (calibrated probability signal)
+      sentiment — r/worldnews, r/politics (event detection / partisan lean)
+    """
+    try:
+        import httpx
+
+        _reddit_throttle()
+
+        params = {
+            "q": query,
+            "restrict_sr": "on",
+            "sort": "relevance",
+            "t": "week",
+            "limit": 10,
+        }
+        headers = {"User-Agent": "predict-market-bot/1.0 (research purposes)"}
+        resp = httpx.get(
+            f"https://www.reddit.com/r/{_REDDIT_SUBREDDITS}/search.json",
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+
+        if resp.status_code == 429:
+            return SourceResult("reddit", "", 0, f"Reddit rate limited (HTTP 429)")
+
+        resp.raise_for_status()
+        children = resp.json().get("data", {}).get("children", [])
+
+        snippets: list[str] = []
+        for child in children:
+            post = child.get("data", {})
+            title = post.get("title", "").strip()
+            if not title:
+                continue
+            subreddit = post.get("subreddit", "").lower()
+            selftext = post.get("selftext", "").strip()[:200]
+            tier = "core" if subreddit in _REDDIT_CORE_SUBS else "sentiment"
+            body = f" — {selftext}" if selftext and selftext != "[deleted]" else ""
+            snippets.append(f"[{tier}] r/{subreddit}: {title}{body}")
+
+        if not snippets:
+            return SourceResult("reddit", "", 0, None)
+
+        combined = " ".join(snippets)
+        clean = sanitize_content(combined, "reddit")
+        if clean is None:
+            return SourceResult("reddit", "", 0, "Injection pattern detected — discarded")
+        return SourceResult("reddit", clean, len(snippets), None)
+
+    except Exception as e:
+        return SourceResult("reddit", "", 0, str(e))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -258,6 +347,7 @@ def scrape_all(market_title: str) -> dict[str, Any]:
     results = [
         scrape_brave(query),
         scrape_rss(query, RSS_FEEDS),
+        scrape_reddit(query),
     ]
 
     successful = [r for r in results if r.error is None and r.content]
