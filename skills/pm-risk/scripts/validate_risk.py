@@ -98,6 +98,34 @@ def load_portfolio_state() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Open Market IDs Loader
+# ---------------------------------------------------------------------------
+
+def load_open_market_ids() -> set[str]:
+    """Return set of market_ids that currently have an open position."""
+    open_markets: set[str] = set()
+    if not TRADE_LOG_PATH.exists():
+        return open_markets
+    try:
+        with open(TRADE_LOG_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    trade = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if trade.get("status") in ("placed", "paper") and trade.get("outcome") is None:
+                    mid = trade.get("market_id")
+                    if mid:
+                        open_markets.add(mid)
+    except OSError:
+        pass
+    return open_markets
+
+
+# ---------------------------------------------------------------------------
 # Individual Gate Checks
 # ---------------------------------------------------------------------------
 

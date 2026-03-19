@@ -38,7 +38,7 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 
 from config_loader import DATA_DIR, STOP_FILE_PATH, load_settings  # noqa: E402
 from kelly_size import compute_position_size  # noqa: E402
-from validate_risk import load_portfolio_state, validate  # noqa: E402
+from validate_risk import load_open_market_ids, load_portfolio_state, validate  # noqa: E402
 import execute_order as _executor  # noqa: E402
 
 
@@ -351,6 +351,7 @@ def main() -> None:
 
     # Load portfolio state once for the whole batch
     portfolio_state = load_portfolio_state()
+    open_market_ids = load_open_market_ids()
     approved_count = 0
 
     orders = []
@@ -378,6 +379,17 @@ def main() -> None:
             })
             continue
 
+        # Dedup gate: skip if an open position already exists for this market
+        if market_id in open_market_ids:
+            orders.append({
+                **signal,
+                "risk_approved": False,
+                "risk_flags": ["duplicate_market"],
+                "order_skipped": True,
+                "skip_reason": "open position already exists for this market",
+            })
+            continue
+
         # Inject running open_positions count so batch self-limits
         batch_portfolio = {
             **portfolio_state,
@@ -389,6 +401,7 @@ def main() -> None:
         # Execute approved orders
         if order["risk_approved"]:
             approved_count += 1
+            open_market_ids.add(market_id)
             try:
                 exec_direction = direction_to_kelly(order["direction"])
                 exec_signal = {**signal, "direction": exec_direction, "platform": order["platform"]}

@@ -53,6 +53,7 @@ class TradeRecord:
     resolved_at: str | None
     outcome: str | None      # "win" | "loss" | None (pending)
     pnl: float | None
+    title: str = ""
     hedge_needed: bool = False  # set if market moved >5% from entry after fill
     hedge_order_id: str | None = None  # order_id of the hedge order, if placed
 
@@ -155,6 +156,7 @@ def execute(
     now = datetime.now(timezone.utc).isoformat()
 
     market_id = signal["market_id"]
+    title = signal.get("title", "")
     platform = signal["platform"]
     direction = signal["direction"]
     entry_price = float(signal.get("entry_price", signal.get("current_yes_price", 0.5)))
@@ -168,6 +170,7 @@ def execute(
     base_record = TradeRecord(
         trade_id=str(uuid.uuid4()),
         market_id=market_id,
+        title=title,
         platform=platform,
         direction=direction,
         size_contracts=contracts,

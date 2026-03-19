@@ -150,16 +150,21 @@ def _render_dashboard() -> str:
     # ---- open positions table ----
     def open_row(t):
         placed = (t.get("placed_at") or "")[:16].replace("T", " ")
-        edge = _fmt(t.get("edge"), ".1%")
+        raw_edge = t.get("edge", 0) or 0
+        display_edge = raw_edge if t.get("direction", "yes").lower() == "yes" else -raw_edge
+        edge_str = f"{display_edge:+.1%}"
+        market_id = t.get("market_id", "")
+        title = t.get("title") or market_id
+        display_title = title[:60] + ("…" if len(title) > 60 else "")
         return (
             f"<tr>"
-            f"<td>{t.get('market_id','')}</td>"
+            f"<td title='{market_id}'>{display_title}</td>"
             f"<td>{t.get('platform','')}</td>"
             f"<td>{t.get('direction','').upper()}</td>"
             f"<td>${float(t.get('size_usd',0)):.2f}</td>"
             f"<td>{_fmt(t.get('entry_price'),'.3f')}</td>"
             f"<td>{_fmt(t.get('p_model'),'.3f')}</td>"
-            f"<td>{edge}</td>"
+            f"<td>{edge_str}</td>"
             f"<td><span class='badge {t.get('status','')}'>{t.get('status','')}</span></td>"
             f"<td>{placed}</td>"
             f"</tr>"
@@ -172,9 +177,12 @@ def _render_dashboard() -> str:
         resolved = (t.get("resolved_at") or "")[:16].replace("T", " ")
         pnl = t.get("pnl")
         pnl_str = f"${float(pnl):+.2f}" if pnl is not None else "—"
+        market_id = t.get("market_id", "")
+        title = t.get("title") or market_id
+        display_title = title[:60] + ("…" if len(title) > 60 else "")
         return (
             f"<tr>"
-            f"<td>{t.get('market_id','')}</td>"
+            f"<td title='{market_id}'>{display_title}</td>"
             f"<td>{t.get('platform','')}</td>"
             f"<td>{t.get('direction','').upper()}</td>"
             f"<td>${float(t.get('size_usd',0)):.2f}</td>"
@@ -241,7 +249,7 @@ def _render_dashboard() -> str:
   <h2>Open Positions ({len(open_trades)})</h2>
   <table>
     <thead><tr>
-      <th>Market</th><th>Platform</th><th>Dir</th><th>Size</th>
+      <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
       <th>Entry</th><th>p_model</th><th>Edge</th><th>Status</th><th>Placed</th>
     </tr></thead>
     <tbody>{open_rows}</tbody>
@@ -252,7 +260,7 @@ def _render_dashboard() -> str:
   <h2>Recent Resolved Trades</h2>
   <table>
     <thead><tr>
-      <th>Market</th><th>Platform</th><th>Dir</th><th>Size</th>
+      <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
       <th>Outcome</th><th>P&amp;L</th><th>Resolved</th>
     </tr></thead>
     <tbody>{resolved_rows}</tbody>
