@@ -102,10 +102,12 @@ def scrape_brave(query: str) -> SourceResult:
 
     Docs: https://api.search.brave.com/app/documentation/web-search
     Returns top 10 results, combining title + description per result.
+    Falls back to LLM web search if Brave fails or quota is exhausted.
     """
     api_key = os.environ.get("BRAVE_API_KEY", "")
     if not api_key:
-        return SourceResult("brave", "", 0, "BRAVE_API_KEY not set")
+        print("[pm-research] BRAVE_API_KEY not set — using LLM fallback", file=sys.stderr)
+        return _scrape_llm_fallback(query)
 
     try:
         import httpx
@@ -127,6 +129,15 @@ def scrape_brave(query: str) -> SourceResult:
             params=params,
             timeout=10,
         )
+
+        # 429 = rate limit, 402 = quota exhausted — fall back to LLM
+        if resp.status_code in (402, 429):
+            print(
+                f"[pm-research] Brave API returned {resp.status_code} — using LLM fallback",
+                file=sys.stderr,
+            )
+            return _scrape_llm_fallback(query)
+
         resp.raise_for_status()
         data = resp.json()
 
@@ -138,7 +149,8 @@ def scrape_brave(query: str) -> SourceResult:
         ]
 
         if not snippets:
-            return SourceResult("brave", "", 0, "No results returned")
+            print("[pm-research] Brave returned no results — using LLM fallback", file=sys.stderr)
+            return _scrape_llm_fallback(query)
 
         combined = " ".join(snippets)
         clean = sanitize_content(combined, "brave")
@@ -147,7 +159,51 @@ def scrape_brave(query: str) -> SourceResult:
         return SourceResult("brave", clean, len(snippets), None)
 
     except Exception as e:
-        return SourceResult("brave", "", 0, str(e))
+        print(f"[pm-research] Brave error: {e} — using LLM fallback", file=sys.stderr)
+        return _scrape_llm_fallback(query)
+
+
+# ---------------------------------------------------------------------------
+# LLM Web Search Fallback
+# ---------------------------------------------------------------------------
+
+def _scrape_llm_fallback(query: str) -> SourceResult:
+    """
+    Ask Claude for a brief summary of recent news/events relevant to the query.
+    Used when Brave Search is unavailable or quota-exhausted.
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return SourceResult("llm_fallback", "", 0, "No LLM API key available for fallback")
+
+    try:
+        import anthropic
+
+        client = anthropic.Anthropic(api_key=api_key)
+        prompt = (
+            f"Provide a brief factual summary of recent news, events, and publicly known information "
+            f"relevant to this prediction market question: '{query}'. "
+            f"Focus on facts, recent developments, and context that would help assess the probability. "
+            f"Be concise (2-3 paragraphs max). Do not make predictions."
+        )
+        message = client.messages.create(
+            model="claude-haiku-4-5-20251001",  # Haiku — fast and cheap for search fallback
+            max_tokens=500,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        content = message.content[0].text if message.content else ""
+        if not content:
+            return SourceResult("llm_fallback", "", 0, "LLM returned empty response")
+
+        clean = sanitize_content(content, "llm_fallback")
+        if clean is None:
+            return SourceResult("llm_fallback", "", 0, "Injection pattern detected — discarded")
+
+        print("[pm-research] LLM fallback search succeeded", file=sys.stderr)
+        return SourceResult("llm_fallback", clean, 1, None)
+
+    except Exception as e:
+        return SourceResult("llm_fallback", "", 0, f"LLM fallback error: {e}")
 
 
 # ---------------------------------------------------------------------------
