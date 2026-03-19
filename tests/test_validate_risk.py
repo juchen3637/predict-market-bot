@@ -1,5 +1,7 @@
 """Unit tests for validate_risk.py"""
+import json
 import sys
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,12 +10,14 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parents[1] / "skills/pm-risk/scripts"))
 
 from validate_risk import (
+    _extract_market_family,
     check_drawdown,
     check_edge,
     check_ensemble,
     check_max_positions,
     check_position_size,
     check_var,
+    load_open_market_families,
     validate,
 )
 
@@ -167,3 +171,137 @@ def test_validate_uses_provided_portfolio_state():
             portfolio_state=portfolio,
         )
         mock_load.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Family extraction tests
+# ---------------------------------------------------------------------------
+
+def test_extract_family_cpi():
+    assert _extract_market_family("Will CPI rise more than 0.5% in March 2026?", "KX123") == "cpi_march_2026"
+
+
+def test_extract_family_sp500():
+    result = _extract_market_family(
+        "Will the S&P 500 be between 6550 and 6574.9999 on Mar 20, 2026?", "KX456"
+    )
+    assert result == "sp500_mar_20_2026"
+
+
+def test_extract_family_fallback():
+    result = _extract_market_family("Will Scottie Scheffler win the 2026 Masters?", "KX789")
+    assert result == "KX789"
+
+
+def test_extract_family_btc():
+    result = _extract_market_family("Will BTC be above 100k on Dec 31, 2026?", "KX000")
+    assert result == "btc_dec_31_2026"
+
+
+# ---------------------------------------------------------------------------
+# load_open_market_families tests
+# ---------------------------------------------------------------------------
+
+def test_load_open_market_families_counts_open_cpi():
+    trades = [
+        {"market_id": "KX1", "title": "Will CPI rise more than 0.5% in March 2026?",
+         "status": "placed", "outcome": None},
+        {"market_id": "KX2", "title": "Will CPI rise more than 0.6% in March 2026?",
+         "status": "paper", "outcome": None},
+        # Resolved — should not count
+        {"market_id": "KX3", "title": "Will CPI rise more than 0.7% in March 2026?",
+         "status": "placed", "outcome": "yes"},
+    ]
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for t in trades:
+            f.write(json.dumps(t) + "\n")
+        tmp_path = Path(f.name)
+
+    with patch("validate_risk.TRADE_LOG_PATH", tmp_path):
+        families = load_open_market_families()
+
+    tmp_path.unlink()
+    assert families == {"cpi_march_2026": 2}
+
+
+# ---------------------------------------------------------------------------
+# Family gate integration tests
+# ---------------------------------------------------------------------------
+
+SETTINGS_WITH_FAMILY = {
+    "risk": {
+        **SETTINGS["risk"],
+        "max_positions_per_family": 2,
+    }
+}
+
+
+def _make_cpi_signal(market_id: str, threshold: str = "0.5") -> dict:
+    return {
+        "market_id": market_id,
+        "title": f"Will CPI rise more than {threshold}% in March 2026?",
+        "edge": 0.18,
+        "models_responded": 3,
+        "llm_consensus": {"models_responded": 3},
+        "current_yes_price": 0.45,
+        "p_model": 0.63,
+        "direction": "long",
+    }
+
+
+def test_family_gate_blocks_third_cpi_signal():
+    """2 open CPI positions in trade log → 3rd CPI signal rejected."""
+    trades = [
+        {"market_id": "KX1", "title": "Will CPI rise more than 0.5% in March 2026?",
+         "status": "placed", "outcome": None},
+        {"market_id": "KX2", "title": "Will CPI rise more than 0.6% in March 2026?",
+         "status": "placed", "outcome": None},
+    ]
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+        for t in trades:
+            f.write(json.dumps(t) + "\n")
+        tmp_path = Path(f.name)
+
+    with patch("validate_risk.TRADE_LOG_PATH", tmp_path):
+        from validate_risk import load_open_market_families  # re-import to get patched path
+        families = load_open_market_families()
+
+    tmp_path.unlink()
+
+    # Simulate the family gate logic in risk_pipeline
+    signal = _make_cpi_signal("KX3", "0.7")
+    family = _extract_market_family(signal["title"], signal["market_id"])
+    max_per_family = 2
+    assert family == "cpi_march_2026"
+    assert families.get(family, 0) >= max_per_family, "Family gate should trigger"
+
+
+def test_family_gate_in_batch_self_limits():
+    """2 CPI approvals in same batch block a 3rd CPI signal in that batch."""
+    families: dict[str, int] = {}
+    max_per_family = 2
+
+    def try_approve(market_id: str, threshold: str) -> bool:
+        signal = _make_cpi_signal(market_id, threshold)
+        family = _extract_market_family(signal["title"], signal["market_id"])
+        if family != signal["market_id"] and families.get(family, 0) >= max_per_family:
+            return False
+        families[family] = families.get(family, 0) + 1
+        return True
+
+    assert try_approve("KX1", "0.5") is True
+    assert try_approve("KX2", "0.6") is True
+    assert try_approve("KX3", "0.7") is False  # blocked — family at limit
+
+
+def test_family_gate_does_not_block_unrecognized_titles():
+    """Fallback market_id path: gate never fires for unrecognized titles."""
+    families: dict[str, int] = {"KX_other": 99}  # irrelevant family is saturated
+    max_per_family = 2
+
+    signal = {"market_id": "KX_unique", "title": "Will Scottie Scheffler win the Masters?"}
+    family = _extract_market_family(signal["title"], signal["market_id"])
+    # family == market_id → gate condition `family != market_id` is False → not blocked
+    assert family == signal["market_id"]
+    blocked = family != signal["market_id"] and families.get(family, 0) >= max_per_family
+    assert blocked is False

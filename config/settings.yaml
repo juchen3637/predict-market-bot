@@ -40,6 +40,7 @@ predict:
     gemini_flash: 0.25      # gemini-2.5-flash
 
 risk:
+  max_positions_per_family: 2        # Max open positions sharing the same underlying event
   kelly_fraction: 0.25               # Fractional Kelly multiplier (0.25 = quarter-Kelly)
   max_position_pct_bankroll: 0.05    # Max 5% of bankroll per position
   max_concurrent_positions: 15       # Max open positions at once

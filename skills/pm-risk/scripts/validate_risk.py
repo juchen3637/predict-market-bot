@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,6 +99,29 @@ def load_portfolio_state() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Market Family Extraction
+# ---------------------------------------------------------------------------
+
+_CPI_RE = re.compile(r"will cpi rise more than .+ in (\w+)\s+(\d{4})", re.IGNORECASE)
+_SP500_RE = re.compile(r"will the s&p 500 be between .+ on (\w+)\s+(\d+),?\s*(\d{4})", re.IGNORECASE)
+_BTC_RE = re.compile(r"will (?:btc|bitcoin).+on (\w+)\s+(\d+),?\s*(\d{4})", re.IGNORECASE)
+
+
+def _extract_market_family(title: str, market_id: str) -> str:
+    """Extract a normalized family key from known title patterns. Falls back to market_id."""
+    m = _CPI_RE.search(title)
+    if m:
+        return f"cpi_{m.group(1).lower()}_{m.group(2)}"
+    m = _SP500_RE.search(title)
+    if m:
+        return f"sp500_{m.group(1).lower()}_{m.group(2)}_{m.group(3)}"
+    m = _BTC_RE.search(title)
+    if m:
+        return f"btc_{m.group(1).lower()}_{m.group(2)}_{m.group(3)}"
+    return market_id  # fallback — unique family, no grouping
+
+
+# ---------------------------------------------------------------------------
 # Open Market IDs Loader
 # ---------------------------------------------------------------------------
 
@@ -123,6 +147,31 @@ def load_open_market_ids() -> set[str]:
     except OSError:
         pass
     return open_markets
+
+
+def load_open_market_families() -> dict[str, int]:
+    """Return mapping of family_key → count of open positions in that family."""
+    counts: dict[str, int] = {}
+    if not TRADE_LOG_PATH.exists():
+        return counts
+    try:
+        with open(TRADE_LOG_PATH) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    trade = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if trade.get("status") in ("placed", "paper") and trade.get("outcome") is None:
+                    family = _extract_market_family(
+                        trade.get("title", ""), trade.get("market_id", "")
+                    )
+                    counts[family] = counts.get(family, 0) + 1
+    except OSError:
+        pass
+    return counts
 
 
 # ---------------------------------------------------------------------------

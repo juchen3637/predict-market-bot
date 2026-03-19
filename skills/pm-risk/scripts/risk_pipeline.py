@@ -38,7 +38,13 @@ sys.path.insert(0, str(_SCRIPT_DIR))
 
 from config_loader import DATA_DIR, STOP_FILE_PATH, load_settings  # noqa: E402
 from kelly_size import compute_position_size  # noqa: E402
-from validate_risk import load_open_market_ids, load_portfolio_state, validate  # noqa: E402
+from validate_risk import (  # noqa: E402
+    _extract_market_family,
+    load_open_market_families,
+    load_open_market_ids,
+    load_portfolio_state,
+    validate,
+)
 import execute_order as _executor  # noqa: E402
 
 
@@ -352,6 +358,8 @@ def main() -> None:
     # Load portfolio state once for the whole batch
     portfolio_state = load_portfolio_state()
     open_market_ids = load_open_market_ids()
+    open_market_families = load_open_market_families()
+    max_per_family = settings.get("risk", {}).get("max_positions_per_family", 2)
     approved_count = 0
 
     orders = []
@@ -390,6 +398,21 @@ def main() -> None:
             })
             continue
 
+        # Family gate: limit correlated positions on the same underlying event
+        family = _extract_market_family(signal.get("title", ""), market_id)
+        if family != market_id and open_market_families.get(family, 0) >= max_per_family:
+            orders.append({
+                **signal,
+                "risk_approved": False,
+                "risk_flags": ["correlated_family_limit"],
+                "order_skipped": True,
+                "skip_reason": (
+                    f"family '{family}' already has {open_market_families[family]} "
+                    f"open positions (max {max_per_family})"
+                ),
+            })
+            continue
+
         # Inject running open_positions count so batch self-limits
         batch_portfolio = {
             **portfolio_state,
@@ -402,6 +425,7 @@ def main() -> None:
         if order["risk_approved"]:
             approved_count += 1
             open_market_ids.add(market_id)
+            open_market_families[family] = open_market_families.get(family, 0) + 1
             try:
                 exec_direction = direction_to_kelly(order["direction"])
                 exec_signal = {**signal, "direction": exec_direction, "platform": order["platform"]}
