@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import datetime, timezone
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
@@ -292,7 +292,7 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main() -> None:
-    server = HTTPServer(("0.0.0.0", PORT), _Handler)
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), _Handler)
     print(f"[dashboard] Serving at http://0.0.0.0:{PORT}/", file=sys.stderr)
     try:
         server.serve_forever()
