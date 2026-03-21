@@ -17,6 +17,7 @@ from metrics import (
     compute_max_drawdown,
     compute_profit_factor,
     compute_metrics,
+    filter_trades_by_mode,
     WIN_RATE_TARGET,
     MAX_DRAWDOWN_LIMIT,
 )
@@ -32,6 +33,7 @@ def _make_trade(
     pnl: float,
     resolved_at: str = "2026-03-17T23:00:00+00:00",
     p_model: float = 0.70,
+    status: str = "paper",
 ) -> dict:
     return {
         "trade_id": f"t-{id(pnl)}",
@@ -45,7 +47,7 @@ def _make_trade(
         "p_model": p_model,
         "edge": 0.10,
         "kelly_fraction": 0.25,
-        "status": "paper",
+        "status": status,
         "rejection_reason": None,
         "placed_at": "2026-03-15T10:00:00+00:00",
         "resolved_at": resolved_at,
@@ -159,20 +161,19 @@ def test_max_drawdown_computes_trough():
 
 
 def test_max_drawdown_exceeds_limit_creates_stop_file(tmp_path, monkeypatch):
-    """If drawdown > 8%, compute_metrics should create the STOP file."""
+    """If live drawdown > 8%, compute_metrics should create the STOP file."""
     monkeypatch.setenv("BANKROLL_USD", "100")
 
     trade_log = tmp_path / "trade_log.jsonl"
     stop_file = tmp_path / "STOP"
 
-    # 10 → -8 → drawdown = 80%
+    # 10 → -8 → drawdown = 80% — must be live trades to trigger STOP
     trades = [
-        _make_trade(outcome="win", pnl=10.0, resolved_at="2026-03-15T10:00:00+00:00"),
-        _make_trade(outcome="loss", pnl=-8.0, resolved_at="2026-03-16T10:00:00+00:00"),
+        _make_trade(outcome="win", pnl=10.0, resolved_at="2026-03-15T10:00:00+00:00", status="placed"),
+        _make_trade(outcome="loss", pnl=-8.0, resolved_at="2026-03-16T10:00:00+00:00", status="placed"),
     ]
     _write_trade_log(trade_log, trades)
 
-    # Patch brier_score to avoid hitting the real CSV
     import metrics as _m
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(_m, "METRICS_PATH", tmp_path / "performance_metrics.json")
@@ -181,8 +182,8 @@ def test_max_drawdown_exceeds_limit_creates_stop_file(tmp_path, monkeypatch):
         with patch("metrics.compute_rolling_brier", return_value={"brier_score": None, "trade_count": 0}):
             result = compute_metrics(trade_log_path=trade_log, stop_file_path=stop_file)
 
-    assert result["max_drawdown"] > MAX_DRAWDOWN_LIMIT
-    assert stop_file.exists(), "STOP file should be created when drawdown > 8%"
+    assert result["live"]["max_drawdown"] > MAX_DRAWDOWN_LIMIT
+    assert stop_file.exists(), "STOP file should be created when live drawdown > 8%"
 
 
 # ---------------------------------------------------------------------------
@@ -223,11 +224,13 @@ def test_compute_metrics_no_trades(tmp_path, monkeypatch):
         with patch("metrics.compute_rolling_brier", return_value={"brier_score": None}):
             result = compute_metrics(trade_log_path=empty_log)
 
-    assert result["trade_count"] == 0
+    assert result["paper"]["trade_count"] == 0
+    assert result["live"]["trade_count"] == 0
     assert "message" in result
 
 
 def test_compute_metrics_writes_snapshot(tmp_path, monkeypatch, winning_trades):
+    """Winning trades are all paper (default status). Verify paper sub-dict is populated."""
     monkeypatch.setenv("BANKROLL_USD", "100")
     trade_log = tmp_path / "trade_log.jsonl"
     snapshot = tmp_path / "performance_metrics.json"
@@ -245,15 +248,19 @@ def test_compute_metrics_writes_snapshot(tmp_path, monkeypatch, winning_trades):
     assert snapshot.exists()
     assert history.exists()
     written = json.loads(snapshot.read_text())
-    assert written["win_rate"] == pytest.approx(1.0)
-    assert written["trade_count"] == 3
+    assert "paper" in written
+    assert "live" in written
+    assert written["paper"]["win_rate"] == pytest.approx(1.0)
+    assert written["paper"]["trade_count"] == 3
+    assert written["live"]["trade_count"] == 0
 
 
 def test_compute_metrics_warns_low_win_rate(tmp_path, monkeypatch, capsys):
+    """Alerts only fire for live trades — use status='placed'."""
     monkeypatch.setenv("BANKROLL_USD", "100")
-    # 1 win, 4 losses → 20% win rate
-    trades = [_make_trade(outcome="win", pnl=4.0, resolved_at="2026-03-15T23:00:00+00:00")] + [
-        _make_trade(outcome="loss", pnl=-1.0, resolved_at=f"2026-03-1{i}T23:00:00+00:00")
+    # 1 win, 4 losses → 20% win rate — all live (placed) to trigger alert
+    trades = [_make_trade(outcome="win", pnl=4.0, resolved_at="2026-03-15T23:00:00+00:00", status="placed")] + [
+        _make_trade(outcome="loss", pnl=-1.0, resolved_at=f"2026-03-1{i}T23:00:00+00:00", status="placed")
         for i in range(6, 10)
     ]
     trade_log = tmp_path / "trade_log.jsonl"
@@ -269,3 +276,34 @@ def test_compute_metrics_warns_low_win_rate(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "WARN: win_rate" in captured.err
+
+
+# ---------------------------------------------------------------------------
+# Unit: filter_trades_by_mode
+# ---------------------------------------------------------------------------
+
+def test_filter_paper_trades():
+    trades = [
+        _make_trade(outcome="win", pnl=1.0, status="paper"),
+        _make_trade(outcome="win", pnl=1.0, status="placed"),
+        _make_trade(outcome="win", pnl=1.0, status="filled"),
+    ]
+    paper = filter_trades_by_mode(trades, "paper")
+    assert len(paper) == 1
+    assert all(t["status"] == "paper" for t in paper)
+
+
+def test_filter_live_trades():
+    trades = [
+        _make_trade(outcome="win", pnl=1.0, status="paper"),
+        _make_trade(outcome="win", pnl=1.0, status="placed"),
+        _make_trade(outcome="win", pnl=1.0, status="filled"),
+    ]
+    live = filter_trades_by_mode(trades, "live")
+    assert len(live) == 2
+    assert all(t["status"] in ("placed", "filled") for t in live)
+
+
+def test_filter_empty():
+    assert filter_trades_by_mode([], "paper") == []
+    assert filter_trades_by_mode([], "live") == []

@@ -166,7 +166,9 @@ def _check_drawdown(logger: logging.Logger) -> bool:
     try:
         with open(PERFORMANCE_METRICS_FILE) as f:
             metrics = json.load(f)
-        drawdown = metrics.get("max_drawdown")
+        # Support both new nested schema { live: {...} } and legacy flat schema
+        live = metrics.get("live", metrics)
+        drawdown = live.get("max_drawdown")
         if drawdown is not None and drawdown >= 0.08:
             logger.critical(
                 "Current drawdown %.1f%% >= 8%% threshold — aborting cycle", drawdown * 100

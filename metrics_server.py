@@ -142,14 +142,17 @@ def _update_gauges() -> None:
     open_count, daily_pnl_usd = _read_open_positions_and_daily_pnl()
     ai_cost_usd = _read_daily_ai_cost()
 
-    if snapshot.get("win_rate") is not None:
-        _win_rate.set(snapshot["win_rate"])
-    if snapshot.get("sharpe") is not None:
-        _sharpe.set(snapshot["sharpe"])
-    if snapshot.get("max_drawdown") is not None:
-        _max_drawdown.set(snapshot["max_drawdown"])
-    if snapshot.get("profit_factor") is not None:
-        _profit_factor.set(snapshot["profit_factor"])
+    # Support both new nested schema { live: {...} } and legacy flat schema
+    live = snapshot.get("live", snapshot)
+
+    if live.get("win_rate") is not None:
+        _win_rate.set(live["win_rate"])
+    if live.get("sharpe") is not None:
+        _sharpe.set(live["sharpe"])
+    if live.get("max_drawdown") is not None:
+        _max_drawdown.set(live["max_drawdown"])
+    if live.get("profit_factor") is not None:
+        _profit_factor.set(live["profit_factor"])
     if snapshot.get("brier_score") is not None:
         _brier_score.set(snapshot["brier_score"])
 
@@ -157,7 +160,7 @@ def _update_gauges() -> None:
     _daily_pnl.set(daily_pnl_usd)
     _ai_cost.set(ai_cost_usd)
 
-    trade_count = int(snapshot.get("trade_count", 0))
+    trade_count = int(live.get("trade_count", 0))
     if trade_count > _last_trade_count:
         _total_trades.inc(trade_count - _last_trade_count)
         _last_trade_count = trade_count

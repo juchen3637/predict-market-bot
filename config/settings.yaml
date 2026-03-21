@@ -24,7 +24,7 @@ scan:
 
 research:
   max_source_chars: 2000             # Truncate scraped content to this length
-  min_sources_required: 2            # Skip market if fewer sources available
+  min_sources_required: 1            # Skip market if fewer sources available
   sentiment_confidence_threshold: 0.6 # Minimum confidence to trust sentiment
   cache_ttl_hours: 4                 # Cache research results for this many hours
   search_provider: "brave"           # "brave" | "tavily"

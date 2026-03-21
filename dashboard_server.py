@@ -2,7 +2,7 @@
 dashboard_server.py — Human-readable trading dashboard
 
 Serves a live HTML dashboard at http://<host>:8002/
-Reads the same data files as metrics_server.py — no extra dependencies.
+Separate Paper / Live views with a client-side toggle (localStorage persisted).
 
 Port 8002 (8000 = Serena MCP, 8001 = Prometheus metrics)
 """
@@ -25,7 +25,7 @@ PORT = 8002
 
 
 # ---------------------------------------------------------------------------
-# Data readers (same logic as metrics_server.py)
+# Data readers
 # ---------------------------------------------------------------------------
 
 def _read_metrics() -> dict:
@@ -80,7 +80,7 @@ def _read_daily_ai_cost() -> float:
 
 
 # ---------------------------------------------------------------------------
-# HTML rendering
+# Helpers
 # ---------------------------------------------------------------------------
 
 def _fmt(value, fmt=".3f", fallback="—"):
@@ -98,61 +98,54 @@ def _pnl_class(value):
     return "pos" if float(value) >= 0 else "neg"
 
 
-def _render_dashboard() -> str:
-    metrics = _read_metrics()
-    trades = _read_trades()
-    ai_cost = _read_daily_ai_cost()
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+def _mode_metrics(metrics: dict, mode: str) -> dict:
+    """Extract paper or live sub-dict; falls back to flat schema for backward compat."""
+    if mode in metrics:
+        return metrics[mode]
+    return metrics
 
-    open_trades = [t for t in trades if t.get("outcome") is None and t.get("status") in ("placed", "paper")]
-    resolved_trades = sorted(
-        [t for t in trades if t.get("outcome") is not None],
-        key=lambda t: t.get("resolved_at", ""),
-        reverse=True,
-    )[:20]
 
+def _daily_pnl_for(trades: list[dict]) -> float:
     today = datetime.now(timezone.utc).date().isoformat()
-    daily_pnl = sum(
+    return sum(
         float(t["pnl"])
         for t in trades
-        if t.get("pnl") is not None and (t.get("resolved_at", "") or "")[:10] == today
+        if t.get("pnl") is not None and (t.get("resolved_at") or "")[:10] == today
     )
 
-    computed_at = metrics.get("computed_at", "")
-    if computed_at:
-        computed_at = computed_at[:16].replace("T", " ") + " UTC"
 
-    msg = metrics.get("message", "")
+# ---------------------------------------------------------------------------
+# HTML rendering helpers
+# ---------------------------------------------------------------------------
 
-    # ---- stat cards ----
-    win_rate = metrics.get("win_rate")
-    sharpe = metrics.get("sharpe")
-    drawdown = metrics.get("max_drawdown")
-    profit_factor = metrics.get("profit_factor")
-    brier = metrics.get("brier_score")
-    trade_count = metrics.get("trade_count", 0)
+def _render_stat_cards(m: dict, open_count: int, daily_pnl: float, ai_cost: float, brier: float | None) -> str:
+    def card(label, value, cls=""):
+        return f'<div class="card {cls}"><div class="label">{label}</div><div class="value">{value}</div></div>'
 
-    def card(label, value, suffix="", cls=""):
-        return f'<div class="card {cls}"><div class="label">{label}</div><div class="value">{value}{suffix}</div></div>'
+    win_rate = m.get("win_rate")
+    sharpe = m.get("sharpe")
+    drawdown = m.get("max_drawdown")
+    profit_factor = m.get("profit_factor")
+    trade_count = m.get("trade_count", 0)
 
-    cards = "".join([
+    return "".join([
         card("Win Rate", _fmt(win_rate, ".1%") if win_rate is not None else "—"),
         card("Sharpe", _fmt(sharpe)),
         card("Max Drawdown", _fmt(drawdown, ".1%") if drawdown is not None else "—"),
         card("Profit Factor", _fmt(profit_factor)),
         card("Brier Score", _fmt(brier)),
         card("Resolved Trades", str(trade_count)),
-        card("Open Positions", str(len(open_trades))),
+        card("Open Positions", str(open_count)),
         card("Daily P&L", f"${daily_pnl:+.2f}", cls=_pnl_class(daily_pnl)),
         card("AI Cost Today", f"${ai_cost:.4f}"),
     ])
 
-    # ---- open positions table ----
-    def open_row(t):
+
+def _render_open_table(trades: list[dict]) -> str:
+    def row(t):
         placed = (t.get("placed_at") or "")[:16].replace("T", " ")
         raw_edge = t.get("edge", 0) or 0
         display_edge = raw_edge if t.get("direction", "yes").lower() == "yes" else -raw_edge
-        edge_str = f"{display_edge:+.1%}"
         market_id = t.get("market_id", "")
         title = t.get("title") or market_id
         display_title = title[:60] + ("…" if len(title) > 60 else "")
@@ -164,16 +157,31 @@ def _render_dashboard() -> str:
             f"<td>${float(t.get('size_usd',0)):.2f}</td>"
             f"<td>{_fmt(t.get('entry_price'),'.3f')}</td>"
             f"<td>{_fmt(t.get('p_model'),'.3f')}</td>"
-            f"<td>{edge_str}</td>"
+            f"<td>{display_edge:+.1%}</td>"
             f"<td><span class='badge {t.get('status','')}'>{t.get('status','')}</span></td>"
             f"<td>{placed}</td>"
             f"</tr>"
         )
 
-    open_rows = "".join(open_row(t) for t in open_trades) or "<tr><td colspan='9' class='empty'>No open positions</td></tr>"
+    rows = "".join(row(t) for t in trades) or "<tr><td colspan='9' class='empty'>No open positions</td></tr>"
+    return f"""
+  <table>
+    <thead><tr>
+      <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
+      <th>Entry</th><th>p_model</th><th>Edge</th><th>Status</th><th>Placed</th>
+    </tr></thead>
+    <tbody>{rows}</tbody>
+  </table>"""
 
-    # ---- resolved trades table ----
-    def resolved_row(t):
+
+def _render_resolved_table(trades: list[dict]) -> str:
+    recent = sorted(
+        [t for t in trades if t.get("outcome") is not None],
+        key=lambda t: t.get("resolved_at", ""),
+        reverse=True,
+    )[:20]
+
+    def row(t):
         resolved = (t.get("resolved_at") or "")[:16].replace("T", " ")
         pnl = t.get("pnl")
         pnl_str = f"${float(pnl):+.2f}" if pnl is not None else "—"
@@ -192,9 +200,65 @@ def _render_dashboard() -> str:
             f"</tr>"
         )
 
-    resolved_rows = "".join(resolved_row(t) for t in resolved_trades) or "<tr><td colspan='7' class='empty'>No resolved trades yet</td></tr>"
+    rows = "".join(row(t) for t in recent) or "<tr><td colspan='7' class='empty'>No resolved trades yet</td></tr>"
+    return f"""
+  <table>
+    <thead><tr>
+      <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
+      <th>Outcome</th><th>P&amp;L</th><th>Resolved</th>
+    </tr></thead>
+    <tbody>{rows}</tbody>
+  </table>"""
 
-    subtitle = f'<p class="subtitle">Last metrics snapshot: {computed_at or "never"}{" · " + msg if msg else ""}</p>' if msg or computed_at else ""
+
+def _render_view(view_id: str, m: dict, open_trades: list[dict], all_trades: list[dict], daily_pnl: float, ai_cost: float, brier: float | None) -> str:
+    cards = _render_stat_cards(m, len(open_trades), daily_pnl, ai_cost, brier)
+    open_table = _render_open_table(open_trades)
+    resolved_table = _render_resolved_table(all_trades)
+    return f"""
+<div id="{view_id}" style="display:none">
+  <div class="cards">{cards}</div>
+  <section>
+    <h2>Open Positions ({len(open_trades)})</h2>
+    {open_table}
+  </section>
+  <section>
+    <h2>Recent Resolved Trades</h2>
+    {resolved_table}
+  </section>
+</div>"""
+
+
+# ---------------------------------------------------------------------------
+# Main render
+# ---------------------------------------------------------------------------
+
+def _render_dashboard() -> str:
+    metrics = _read_metrics()
+    trades = _read_trades()
+    ai_cost = _read_daily_ai_cost()
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    brier = metrics.get("brier_score")
+
+    paper_trades = [t for t in trades if t.get("status") == "paper"]
+    live_trades = [t for t in trades if t.get("status") in ("placed", "filled")]
+
+    paper_open = [t for t in paper_trades if t.get("outcome") is None]
+    live_open = [t for t in live_trades if t.get("outcome") is None]
+
+    paper_metrics = _mode_metrics(metrics, "paper")
+    live_metrics = _mode_metrics(metrics, "live")
+
+    paper_pnl = _daily_pnl_for(paper_trades)
+    live_pnl = _daily_pnl_for(live_trades)
+
+    computed_at = metrics.get("computed_at", "")
+    if computed_at:
+        computed_at = computed_at[:16].replace("T", " ") + " UTC"
+    subtitle = f'<p class="subtitle">Last metrics snapshot: {computed_at or "never"}</p>'
+
+    paper_view = _render_view("view-paper", paper_metrics, paper_open, paper_trades, paper_pnl, ai_cost, brier)
+    live_view = _render_view("view-live", live_metrics, live_open, live_trades, live_pnl, ai_cost, brier)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -208,8 +272,17 @@ def _render_dashboard() -> str:
   body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
          background: #0d1117; color: #e6edf3; padding: 24px; }}
   h1 {{ font-size: 1.4rem; font-weight: 600; margin-bottom: 4px; }}
-  .subtitle {{ font-size: 0.8rem; color: #8b949e; margin-bottom: 24px; }}
+  .subtitle {{ font-size: 0.8rem; color: #8b949e; margin-bottom: 16px; }}
   .timestamp {{ font-size: 0.75rem; color: #8b949e; float: right; margin-top: 2px; }}
+
+  .tab-bar {{ display: flex; gap: 8px; margin-bottom: 24px; border-bottom: 1px solid #30363d; padding-bottom: 0; }}
+  .tab {{ background: none; border: none; color: #8b949e; font-size: 0.9rem; font-weight: 500;
+          padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent;
+          margin-bottom: -1px; transition: color 0.15s; }}
+  .tab:hover {{ color: #e6edf3; }}
+  .tab.active {{ color: #58a6ff; border-bottom-color: #58a6ff; }}
+  .tab .count {{ font-size: 0.72rem; background: #21262d; border-radius: 10px;
+                 padding: 1px 6px; margin-left: 6px; }}
 
   .cards {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }}
   .card {{ background: #161b22; border: 1px solid #30363d; border-radius: 8px;
@@ -243,29 +316,32 @@ def _render_dashboard() -> str:
 <h1>predict-market-bot <span class="timestamp">Updated {now} · auto-refresh 60s</span></h1>
 {subtitle}
 
-<div class="cards">{cards}</div>
+<div class="tab-bar">
+  <button class="tab" id="tab-paper" onclick="switchTab('paper')">
+    Paper <span class="count">{len(paper_open)}</span>
+  </button>
+  <button class="tab" id="tab-live" onclick="switchTab('live')">
+    Live <span class="count">{len(live_open)}</span>
+  </button>
+</div>
 
-<section>
-  <h2>Open Positions ({len(open_trades)})</h2>
-  <table>
-    <thead><tr>
-      <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
-      <th>Entry</th><th>p_model</th><th>Edge</th><th>Status</th><th>Placed</th>
-    </tr></thead>
-    <tbody>{open_rows}</tbody>
-  </table>
-</section>
+{paper_view}
+{live_view}
 
-<section>
-  <h2>Recent Resolved Trades</h2>
-  <table>
-    <thead><tr>
-      <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
-      <th>Outcome</th><th>P&amp;L</th><th>Resolved</th>
-    </tr></thead>
-    <tbody>{resolved_rows}</tbody>
-  </table>
-</section>
+<script>
+function switchTab(mode) {{
+  document.getElementById('view-paper').style.display = mode === 'paper' ? 'block' : 'none';
+  document.getElementById('view-live').style.display  = mode === 'live'  ? 'block' : 'none';
+  document.getElementById('tab-paper').className = 'tab' + (mode === 'paper' ? ' active' : '');
+  document.getElementById('tab-live').className  = 'tab' + (mode === 'live'  ? ' active' : '');
+  try {{ localStorage.setItem('dashboard_tab', mode); }} catch(e) {{}}
+}}
+(function() {{
+  var saved = 'paper';
+  try {{ saved = localStorage.getItem('dashboard_tab') || 'paper'; }} catch(e) {{}}
+  switchTab(saved);
+}})();
+</script>
 </body>
 </html>"""
 

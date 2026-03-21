@@ -123,12 +123,14 @@ def write_daily_summary(metrics: dict, new_lessons: int) -> Path:
     def _fmt(val: float | None, fmt: str = ".1%") -> str:
         return format(val, fmt) if val is not None else "N/A"
 
-    win_rate_str = _fmt(metrics.get("win_rate"))
-    sharpe_str = _fmt(metrics.get("sharpe"), ".2f")
-    drawdown_str = _fmt(metrics.get("max_drawdown"))
-    profit_factor_str = _fmt(metrics.get("profit_factor"), ".2f")
+    # Support both new nested schema { paper: {...}, live: {...} } and legacy flat schema
+    live = metrics.get("live", metrics)
+    win_rate_str = _fmt(live.get("win_rate"))
+    sharpe_str = _fmt(live.get("sharpe"), ".2f")
+    drawdown_str = _fmt(live.get("max_drawdown"))
+    profit_factor_str = _fmt(live.get("profit_factor"), ".2f")
     brier_str = _fmt(metrics.get("brier_score"), ".3f")
-    trades_resolved = metrics.get("trade_count", 0)
+    trades_resolved = live.get("trade_count", 0)
 
     content = (
         f"# Daily Summary — {today}\n"
