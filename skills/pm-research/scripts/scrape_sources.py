@@ -254,9 +254,57 @@ def scrape_web(query: str) -> SourceResult:
 
 def _scrape_llm_fallback(query: str) -> SourceResult:
     """
-    Ask Claude for a brief summary of recent news/events relevant to the query.
-    Used when Brave Search is unavailable or quota-exhausted.
+    Fetch live search-grounded context via Gemini 2.5 Flash (Google Search grounding).
+    Falls back to Haiku (static knowledge) if GOOGLE_AI_API_KEY is not set.
+    Used when Brave/Tavily is unavailable or quota-exhausted.
     """
+    google_key = os.environ.get("GOOGLE_AI_API_KEY", "")
+    if google_key:
+        result = _scrape_gemini_search(query, google_key)
+        if result.error is None:
+            return result
+        print(f"[pm-research] Gemini search fallback failed ({result.error}) — trying Haiku", file=sys.stderr)
+
+    return _scrape_haiku_fallback(query)
+
+
+def _scrape_gemini_search(query: str, api_key: str) -> SourceResult:
+    """Gemini 2.5 Flash with Google Search grounding for live results."""
+    try:
+        from google import genai  # type: ignore
+        from google.genai import types  # type: ignore
+
+        client = genai.Client(api_key=api_key)
+        prompt = (
+            f"Search for and provide a brief factual summary of recent news, events, and current "
+            f"information relevant to this prediction market question: '{query}'. "
+            f"Focus on facts, recent developments, and context that would help assess the probability. "
+            f"Be concise (2-3 paragraphs max). Do not make predictions."
+        )
+        resp = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
+        content = resp.text if resp.text else ""
+        if not content:
+            return SourceResult("gemini_search", "", 0, "Gemini returned empty response")
+
+        clean = sanitize_content(content, "gemini_search")
+        if clean is None:
+            return SourceResult("gemini_search", "", 0, "Injection pattern detected — discarded")
+
+        print("[pm-research] Gemini search grounding fallback succeeded", file=sys.stderr)
+        return SourceResult("gemini_search", clean, 1, None)
+
+    except Exception as e:
+        return SourceResult("gemini_search", "", 0, f"Gemini search error: {e}")
+
+
+def _scrape_haiku_fallback(query: str) -> SourceResult:
+    """Claude Haiku static-knowledge fallback (no live search)."""
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         return SourceResult("llm_fallback", "", 0, "No LLM API key available for fallback")
@@ -272,7 +320,7 @@ def _scrape_llm_fallback(query: str) -> SourceResult:
             f"Be concise (2-3 paragraphs max). Do not make predictions."
         )
         message = client.messages.create(
-            model="claude-haiku-4-5-20251001",  # Haiku — fast and cheap for search fallback
+            model="claude-haiku-4-5-20251001",
             max_tokens=500,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -284,7 +332,7 @@ def _scrape_llm_fallback(query: str) -> SourceResult:
         if clean is None:
             return SourceResult("llm_fallback", "", 0, "Injection pattern detected — discarded")
 
-        print("[pm-research] LLM fallback search succeeded", file=sys.stderr)
+        print("[pm-research] Haiku fallback search succeeded", file=sys.stderr)
         return SourceResult("llm_fallback", clean, 1, None)
 
     except Exception as e:
