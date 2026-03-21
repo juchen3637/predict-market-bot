@@ -88,9 +88,12 @@ def _polymarket_resolution(market_id: str) -> dict[str, Any] | None:
     )
     try:
         with httpx.Client(timeout=15.0) as client:
-            resp = client.get(f"{base_url}/markets/{market_id}")
+            resp = client.get(f"{base_url}/markets", params={"condition_id": market_id})
             resp.raise_for_status()
-            data = resp.json()
+            results = resp.json()
+            if not isinstance(results, list) or not results:
+                return None
+            data = results[0]
 
         raw_prices = data.get("outcomePrices") or ["0.5", "0.5"]
         if isinstance(raw_prices, str):
@@ -127,7 +130,7 @@ def _kalshi_resolution(market_id: str) -> dict[str, Any] | None:
         status = data.get("status", "")
         result = data.get("result", "")
 
-        if status != "settled":
+        if status not in ("settled", "finalized"):
             return {"resolved": False, "outcome": None, "resolved_at": None}
 
         if result == "yes":
