@@ -29,6 +29,7 @@ PORT = 8002
 # ---------------------------------------------------------------------------
 
 def _read_metrics() -> dict:
+    """Read performance_metrics.json — used only for brier_score and computed_at."""
     if not METRICS_PATH.exists():
         return {}
     try:
@@ -36,6 +37,45 @@ def _read_metrics() -> dict:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
+
+
+def _compute_live_metrics(resolved_trades: list[dict]) -> dict:
+    """Compute win_rate, max_drawdown, profit_factor, total_pnl directly from trades.
+
+    Called at render time so stats are always current, not waiting for the nightly snapshot.
+    """
+    if not resolved_trades:
+        return {"trade_count": 0, "win_rate": None, "max_drawdown": None, "profit_factor": None, "total_pnl": 0.0}
+
+    trade_count = len(resolved_trades)
+    wins = sum(1 for t in resolved_trades if t.get("outcome") == "win")
+    win_rate = wins / trade_count
+
+    gross_profit = sum(float(t["pnl"]) for t in resolved_trades if float(t.get("pnl", 0)) > 0)
+    gross_loss = sum(abs(float(t["pnl"])) for t in resolved_trades if float(t.get("pnl", 0)) < 0)
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else None
+    total_pnl = sum(float(t.get("pnl", 0)) for t in resolved_trades)
+
+    # Rolling peak-to-trough drawdown
+    sorted_trades = sorted(
+        [t for t in resolved_trades if t.get("resolved_at")],
+        key=lambda t: t["resolved_at"],
+    )
+    cumulative, peak, max_dd = 0.0, 0.0, 0.0
+    for t in sorted_trades:
+        cumulative += float(t.get("pnl", 0))
+        if cumulative > peak:
+            peak = cumulative
+        if peak > 0:
+            max_dd = max(max_dd, (peak - cumulative) / peak)
+
+    return {
+        "trade_count": trade_count,
+        "win_rate": round(win_rate, 4),
+        "max_drawdown": round(max_dd, 4),
+        "profit_factor": round(profit_factor, 4) if profit_factor is not None else None,
+        "total_pnl": round(total_pnl, 4),
+    }
 
 
 def _read_trades() -> list[dict]:
@@ -123,19 +163,19 @@ def _render_stat_cards(m: dict, open_count: int, daily_pnl: float, ai_cost: floa
         return f'<div class="card {cls}"><div class="label">{label}</div><div class="value">{value}</div></div>'
 
     win_rate = m.get("win_rate")
-    sharpe = m.get("sharpe")
     drawdown = m.get("max_drawdown")
     profit_factor = m.get("profit_factor")
     trade_count = m.get("trade_count", 0)
+    total_pnl = m.get("total_pnl", 0.0)
 
     return "".join([
         card("Win Rate", _fmt(win_rate, ".1%") if win_rate is not None else "—"),
-        card("Sharpe", _fmt(sharpe)),
         card("Max Drawdown", _fmt(drawdown, ".1%") if drawdown is not None else "—"),
-        card("Profit Factor", _fmt(profit_factor)),
-        card("Brier Score", _fmt(brier)),
+        card("Profit Factor", _fmt(profit_factor) if profit_factor is not None else "—"),
+        card("Brier Score", _fmt(brier) if brier is not None else "—"),
         card("Resolved Trades", str(trade_count)),
         card("Open Positions", str(open_count)),
+        card("Total P&L", f"${total_pnl:+.2f}", cls=_pnl_class(total_pnl)),
         card("Daily P&L", f"${daily_pnl:+.2f}", cls=_pnl_class(daily_pnl)),
         card("AI Cost Today", f"${ai_cost:.4f}"),
     ])
@@ -211,7 +251,9 @@ def _render_resolved_table(trades: list[dict]) -> str:
   </table>"""
 
 
-def _render_view(view_id: str, m: dict, open_trades: list[dict], all_trades: list[dict], daily_pnl: float, ai_cost: float, brier: float | None) -> str:
+def _render_view(view_id: str, all_trades: list[dict], open_trades: list[dict], daily_pnl: float, ai_cost: float, brier: float | None) -> str:
+    resolved = [t for t in all_trades if t.get("outcome") is not None and t.get("pnl") is not None]
+    m = _compute_live_metrics(resolved)
     cards = _render_stat_cards(m, len(open_trades), daily_pnl, ai_cost, brier)
     open_table = _render_open_table(open_trades)
     resolved_table = _render_resolved_table(all_trades)
@@ -246,9 +288,6 @@ def _render_dashboard() -> str:
     paper_open = [t for t in paper_trades if t.get("outcome") is None]
     live_open = [t for t in live_trades if t.get("outcome") is None]
 
-    paper_metrics = _mode_metrics(metrics, "paper")
-    live_metrics = _mode_metrics(metrics, "live")
-
     paper_pnl = _daily_pnl_for(paper_trades)
     live_pnl = _daily_pnl_for(live_trades)
 
@@ -257,8 +296,8 @@ def _render_dashboard() -> str:
         computed_at = computed_at[:16].replace("T", " ") + " UTC"
     subtitle = f'<p class="subtitle">Last metrics snapshot: {computed_at or "never"}</p>'
 
-    paper_view = _render_view("view-paper", paper_metrics, paper_open, paper_trades, paper_pnl, ai_cost, brier)
-    live_view = _render_view("view-live", live_metrics, live_open, live_trades, live_pnl, ai_cost, brier)
+    paper_view = _render_view("view-paper", paper_trades, paper_open, paper_pnl, ai_cost, brier)
+    live_view = _render_view("view-live", live_trades, live_open, live_pnl, ai_cost, brier)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
