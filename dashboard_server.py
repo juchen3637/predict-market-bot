@@ -282,7 +282,7 @@ def _render_dashboard() -> str:
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     brier = metrics.get("brier_score")
 
-    paper_trades = [t for t in trades if t.get("status") == "paper"]
+    paper_trades = [t for t in trades if t.get("status") in ("paper", "backtest")]
     live_trades = [t for t in trades if t.get("status") in ("placed", "filled")]
 
     paper_open = [t for t in paper_trades if t.get("outcome") is None]
@@ -349,6 +349,7 @@ def _render_dashboard() -> str:
   .badge.paper {{ background: #1f3a5f; color: #58a6ff; }}
   .badge.placed {{ background: #1a3a2a; color: #3fb950; }}
   .badge.filled {{ background: #1a3a2a; color: #3fb950; }}
+  .badge.backtest {{ background: #2d2a1f; color: #d4a017; }}
 </style>
 </head>
 <body>

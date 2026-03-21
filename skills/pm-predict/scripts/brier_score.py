@@ -48,7 +48,12 @@ def brier_score(predictions: list[float], outcomes: list[int]) -> float:
 # ---------------------------------------------------------------------------
 
 def load_resolved_trades(window_days: int = ROLLING_WINDOW_DAYS) -> list[dict]:
-    """Load resolved trades within the rolling window from trade_log.jsonl."""
+    """Load resolved trades within the rolling window from trade_log.jsonl.
+
+    Includes paper, placed, filled, and backtest entries that have an outcome.
+    Pass window_days=9999 to include all historical backtest entries regardless
+    of their resolved_at date.
+    """
     if not TRADE_LOG_PATH.exists():
         return []
 
@@ -62,6 +67,8 @@ def load_resolved_trades(window_days: int = ROLLING_WINDOW_DAYS) -> list[dict]:
                 continue
             try:
                 trade = json.loads(line)
+                if trade.get("status") not in ("paper", "placed", "filled", "backtest"):
+                    continue
                 if trade.get("outcome") is None:
                     continue  # Not yet resolved
                 resolved_at = trade.get("resolved_at", "")
@@ -79,9 +86,12 @@ def load_resolved_trades(window_days: int = ROLLING_WINDOW_DAYS) -> list[dict]:
 # Compute and Record
 # ---------------------------------------------------------------------------
 
-def compute_rolling_brier() -> dict:
-    """Compute rolling Brier Score and write to brier_history.csv."""
-    trades = load_resolved_trades(ROLLING_WINDOW_DAYS)
+def compute_rolling_brier(window_days: int = ROLLING_WINDOW_DAYS) -> dict:
+    """Compute rolling Brier Score and write to brier_history.csv.
+
+    Pass window_days=9999 to include all backtest entries regardless of age.
+    """
+    trades = load_resolved_trades(window_days)
 
     if len(trades) < 10:
         return {
@@ -105,7 +115,7 @@ def compute_rolling_brier() -> dict:
             datetime.now(timezone.utc).isoformat(),
             round(bs, 6),
             len(trades),
-            ROLLING_WINDOW_DAYS,
+            window_days,
         ])
 
     alert = bs > ALERT_THRESHOLD
@@ -119,7 +129,7 @@ def compute_rolling_brier() -> dict:
     return {
         "brier_score": round(bs, 6),
         "trade_count": len(trades),
-        "window_days": ROLLING_WINDOW_DAYS,
+        "window_days": window_days,
         "alert": alert,
         "computed_at": datetime.now(timezone.utc).isoformat(),
     }
