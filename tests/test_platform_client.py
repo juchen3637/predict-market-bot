@@ -45,11 +45,8 @@ def _mock_response_error(status_code: int = 500) -> MagicMock:
 
 class TestPolymarketResolution:
     def test_resolved_yes(self):
-        body = {
-            "resolved": True,
-            "outcomePrices": ["1", "0"],
-            "resolutionTime": "2024-01-15T12:00:00Z",
-        }
+        """Gamma API returns a list with a resolved YES market."""
+        body = [{"resolved": True, "outcomePrices": ["1", "0"], "resolutionTime": "2024-01-15T12:00:00Z"}]
         with patch("platform_client.httpx.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__enter__.return_value
             mock_client.get.return_value = _mock_response(200, body)
@@ -61,12 +58,21 @@ class TestPolymarketResolution:
         assert result["outcome"] == "yes"
         assert result["resolved_at"] == "2024-01-15T12:00:00Z"
 
+    def test_resolved_yes_dict_response(self):
+        """Gamma API may return a single dict instead of a list."""
+        body = {"resolved": True, "outcomePrices": ["1", "0"], "resolutionTime": "2024-01-15T12:00:00Z"}
+        with patch("platform_client.httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.get.return_value = _mock_response(200, body)
+
+            result = platform_client.get_market_resolution("mkt_abc", "polymarket")
+
+        assert result is not None
+        assert result["resolved"] is True
+        assert result["outcome"] == "yes"
+
     def test_resolved_no(self):
-        body = {
-            "resolved": True,
-            "outcomePrices": ["0", "1"],
-            "resolutionTime": "2024-02-01T00:00:00Z",
-        }
+        body = [{"resolved": True, "outcomePrices": ["0", "1"], "resolutionTime": "2024-02-01T00:00:00Z"}]
         with patch("platform_client.httpx.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__enter__.return_value
             mock_client.get.return_value = _mock_response(200, body)
@@ -77,11 +83,7 @@ class TestPolymarketResolution:
         assert result["outcome"] == "no"
 
     def test_unresolved(self):
-        body = {
-            "resolved": False,
-            "outcomePrices": ["0.6", "0.4"],
-            "resolutionTime": None,
-        }
+        body = [{"resolved": False, "outcomePrices": ["0.6", "0.4"], "resolutionTime": None}]
         with patch("platform_client.httpx.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__enter__.return_value
             mock_client.get.return_value = _mock_response(200, body)
@@ -93,11 +95,7 @@ class TestPolymarketResolution:
 
     def test_resolved_no_definitive_outcome(self):
         """Resolved=True but prices not yet finalized to 0 or 1."""
-        body = {
-            "resolved": True,
-            "outcomePrices": ["0.7", "0.3"],
-            "resolutionTime": "2024-03-01T00:00:00Z",
-        }
+        body = [{"resolved": True, "outcomePrices": ["0.7", "0.3"], "resolutionTime": "2024-03-01T00:00:00Z"}]
         with patch("platform_client.httpx.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__enter__.return_value
             mock_client.get.return_value = _mock_response(200, body)
@@ -118,11 +116,7 @@ class TestPolymarketResolution:
 
     def test_json_string_outcome_prices(self):
         """outcomePrices may arrive as a JSON string."""
-        body = {
-            "resolved": True,
-            "outcomePrices": '["1", "0"]',
-            "resolutionTime": "2024-01-01T00:00:00Z",
-        }
+        body = [{"resolved": True, "outcomePrices": '["1", "0"]', "resolutionTime": "2024-01-01T00:00:00Z"}]
         with patch("platform_client.httpx.Client") as mock_client_cls:
             mock_client = mock_client_cls.return_value.__enter__.return_value
             mock_client.get.return_value = _mock_response(200, body)
@@ -130,6 +124,63 @@ class TestPolymarketResolution:
             result = platform_client.get_market_resolution("mkt_str", "polymarket")
 
         assert result["outcome"] == "yes"
+
+    def test_stale_amm_market_triggers_clob_fallback(self):
+        """
+        When gamma returns an AMM-era garbage market (outcomePrices=["0","0"],
+        resolved=None), the resolver falls back to the CLOB API to get the
+        real condition_id, then retries gamma.
+        """
+        stale_body = [{"resolved": None, "outcomePrices": ["0", "0"], "resolutionTime": None}]
+        real_body = [{"resolved": True, "outcomePrices": ["1", "0"], "resolutionTime": "2024-06-01T00:00:00Z"}]
+        clob_body = {"condition_id": "0xREAL_CONDITION_ID"}
+
+        with patch("platform_client.httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            # First call: gamma returns stale. Second call: CLOB. Third call: gamma retry.
+            mock_client.get.side_effect = [
+                _mock_response(200, stale_body),
+                _mock_response(200, clob_body),
+                _mock_response(200, real_body),
+            ]
+
+            result = platform_client.get_market_resolution("0xSTALE_TOKEN_ID", "polymarket")
+
+        assert result is not None
+        assert result["resolved"] is True
+        assert result["outcome"] == "yes"
+
+    def test_empty_gamma_response_triggers_clob_fallback(self):
+        """Empty gamma list → falls back to CLOB → retries gamma with real condition_id."""
+        real_body = [{"resolved": True, "outcomePrices": ["0", "1"], "resolutionTime": "2024-07-01T00:00:00Z"}]
+        clob_body = {"condition_id": "0xREAL_ID"}
+
+        with patch("platform_client.httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.get.side_effect = [
+                _mock_response(200, []),        # gamma: empty
+                _mock_response(200, clob_body), # CLOB: gives real condition_id
+                _mock_response(200, real_body), # gamma retry: resolved
+            ]
+
+            result = platform_client.get_market_resolution("0xTOKEN_ID", "polymarket")
+
+        assert result is not None
+        assert result["resolved"] is True
+        assert result["outcome"] == "no"
+
+    def test_clob_fallback_fails_returns_none(self):
+        """Both gamma and CLOB fallback fail → returns None."""
+        with patch("platform_client.httpx.Client") as mock_client_cls:
+            mock_client = mock_client_cls.return_value.__enter__.return_value
+            mock_client.get.side_effect = [
+                _mock_response(200, []),              # gamma: empty
+                Exception("CLOB connection refused"), # CLOB: fails
+            ]
+
+            result = platform_client.get_market_resolution("0xBAD_ID", "polymarket")
+
+        assert result is None
 
 
 # ---------------------------------------------------------------------------

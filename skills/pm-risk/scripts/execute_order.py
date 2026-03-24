@@ -67,16 +67,29 @@ def place_polymarket_order(
     direction: str,
     contracts: int,
     limit_price: float,
+    clob_token_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """
     Place a limit order on Polymarket CLOB.
     Returns: {"order_id": str, "fill_price": float | None, "status": str}
 
+    market_id is the condition ID (used for resolution/tracking).
+    clob_token_ids[0] is the YES token and [1] is the NO token — the CLOB
+    requires a token ID for OrderArgs, not the condition ID. Pass
+    clob_token_ids from the scanned MarketCandidate to enable live orders.
+
     Reference: https://docs.polymarket.com/#place-order
     Reference: github.com/CarlosIbCu/polymarket-kalshi-btc-arbitrage-bot
     """
     from polymarket_client import place_order as _pm_place
-    result = _pm_place(market_id, direction, contracts, limit_price)
+
+    # Select the correct CLOB token ID for the order direction.
+    # YES token is at index 0, NO token is at index 1.
+    token_id: str | None = None
+    if clob_token_ids:
+        token_id = clob_token_ids[0] if direction == "yes" else clob_token_ids[1] if len(clob_token_ids) > 1 else clob_token_ids[0]
+
+    result = _pm_place(market_id, direction, contracts, limit_price, token_id=token_id)
     return result if result is not None else {
         "order_id": None,
         "fill_price": None,
@@ -219,7 +232,8 @@ def execute(
             result = place_kalshi_order(market_id, direction, contracts, entry_price, use_demo)
             status = "placed"
         elif platform == "polymarket":
-            result = place_polymarket_order(market_id, direction, contracts, entry_price)
+            clob_token_ids = signal.get("clob_token_ids") or []
+            result = place_polymarket_order(market_id, direction, contracts, entry_price, clob_token_ids=clob_token_ids)
             status = "placed"
         else:
             raise ValueError(f"Unknown platform: {platform}")

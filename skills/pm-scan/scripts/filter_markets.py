@@ -17,7 +17,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -29,7 +29,7 @@ from dotenv import load_dotenv
 
 load_dotenv(
     dotenv_path=os.path.join(os.path.dirname(__file__), "../../../.env"),
-    override=False,
+    override=True,
 )
 
 # ---------------------------------------------------------------------------
@@ -62,6 +62,10 @@ class MarketCandidate:
     days_to_expiry: int
     anomaly_flags: list[str]
     scanned_at: str
+    # CLOB token IDs for Polymarket order placement (YES token at [0], NO at [1]).
+    # market_id stores the condition ID (used for resolution via gamma API).
+    # Live CLOB orders require the token ID, not the condition ID.
+    clob_token_ids: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -243,6 +247,14 @@ def apply_filters(
             title = market.get("question", "")
             category = market.get("category") or market.get("groupItemTitle", "other")
             market_id = market.get("conditionId") or market.get("condition_id", "")
+            # clobTokenIds arrives as a JSON string or list: ["0xYES...", "0xNO..."]
+            raw_token_ids = market.get("clobTokenIds") or market.get("clob_token_ids") or []
+            if isinstance(raw_token_ids, str):
+                try:
+                    raw_token_ids = json.loads(raw_token_ids)
+                except Exception:
+                    raw_token_ids = []
+            clob_token_ids: list[str] = list(raw_token_ids) if raw_token_ids else []
         else:  # kalshi — v2 API field names
             volume = float(market.get("volume_fp") or market.get("volume", 0))
             # liquidity_dollars is not populated by Kalshi API; use open_interest as proxy
@@ -256,6 +268,7 @@ def apply_filters(
             event_ticker = market.get("event_ticker", "")
             category = _kalshi_category(event_ticker)
             market_id = market.get("ticker", "")
+            clob_token_ids = []
 
         # Volume filter
         if volume < min_volume:
@@ -287,6 +300,7 @@ def apply_filters(
             days_to_expiry=days_remaining,
             anomaly_flags=[],
             scanned_at=now.isoformat(),
+            clob_token_ids=clob_token_ids,
         ))
 
     return candidates

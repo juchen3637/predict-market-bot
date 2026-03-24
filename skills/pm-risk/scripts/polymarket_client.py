@@ -69,16 +69,21 @@ def place_order(
     contracts: int,
     limit_price: float,
     side: str = "BUY",
+    token_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Place a limit order on Polymarket CLOB.
 
     Args:
-        market_id:   Polymarket token ID (condition ID)
+        market_id:   Polymarket condition ID (used for tracking/resolution)
         direction:   "yes" or "no"
         contracts:   Number of contracts to buy/sell
         limit_price: Limit price in [0, 1]
         side:        "BUY" (default) or "SELL" (for exit / hedge)
+        token_id:    CLOB token ID for the order direction (YES or NO token).
+                     The CLOB requires a token ID, not a condition ID.
+                     Sourced from MarketCandidate.clob_token_ids. Falls back
+                     to market_id if not provided (legacy behaviour).
 
     Returns:
         {"order_id": str | None, "fill_price": float | None, "status": str}
@@ -89,10 +94,13 @@ def place_order(
         return dict(_DECLINED)
 
     order_side = SELL if side.upper() == "SELL" else BUY
+    # Use explicit token_id if provided; fall back to market_id for backwards
+    # compatibility with any callers that don't pass clob_token_ids yet.
+    clob_token_id = token_id or market_id
 
     try:
         order_args = OrderArgs(
-            token_id=market_id,
+            token_id=clob_token_id,
             price=limit_price,
             size=float(contracts),
             side=order_side,

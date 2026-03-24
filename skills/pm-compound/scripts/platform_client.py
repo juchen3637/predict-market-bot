@@ -19,7 +19,7 @@ from dotenv import load_dotenv
 
 load_dotenv(
     dotenv_path=os.path.join(os.path.dirname(__file__), "../../../.env"),
-    override=False,
+    override=True,
 )
 
 
@@ -83,17 +83,17 @@ def get_market_resolution(market_id: str, platform: str) -> dict[str, Any] | Non
 
 
 def _polymarket_resolution(market_id: str) -> dict[str, Any] | None:
-    base_url = os.environ.get(
+    gamma_base = os.environ.get(
         "POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"
+    )
+    clob_base = os.environ.get(
+        "POLYMARKET_CLOB_URL", "https://clob.polymarket.com"
     )
     try:
         with httpx.Client(timeout=15.0) as client:
-            resp = client.get(f"{base_url}/markets", params={"condition_id": market_id})
-            resp.raise_for_status()
-            results = resp.json()
-            if not isinstance(results, list) or not results:
+            data = _polymarket_fetch_market(client, gamma_base, clob_base, market_id)
+            if data is None:
                 return None
-            data = results[0]
 
         raw_prices = data.get("outcomePrices") or ["0.5", "0.5"]
         if isinstance(raw_prices, str):
@@ -115,6 +115,82 @@ def _polymarket_resolution(market_id: str) -> dict[str, Any] | None:
         }
     except Exception:
         return None
+
+
+def _polymarket_fetch_market(
+    client: "httpx.Client",
+    gamma_base: str,
+    clob_base: str,
+    market_id: str,
+) -> "dict[str, Any] | None":
+    """
+    Look up a Polymarket market, handling both condition IDs and CLOB token IDs.
+
+    Primary:  GET gamma-api.polymarket.com/markets?condition_id=<market_id>
+    Fallback: GET clob.polymarket.com/markets/<market_id> → extract real
+              condition_id → retry gamma. Used when the stored ID is a CLOB
+              token ID rather than a gamma condition ID, or when the primary
+              query returns a stale AMM-era market.
+    """
+    data = _gamma_lookup(client, gamma_base, market_id)
+    if data is not None and not _is_stale_amm_market(data):
+        return data
+
+    # Fallback: ask the CLOB for the canonical condition_id
+    try:
+        clob_resp = client.get(f"{clob_base}/markets/{market_id}", timeout=10.0)
+        if clob_resp.status_code == 200:
+            real_cid = clob_resp.json().get("condition_id", "")
+            if real_cid and real_cid != market_id:
+                retry = _gamma_lookup(client, gamma_base, real_cid)
+                if retry is not None:
+                    return retry
+    except Exception:
+        pass
+
+    return data  # may be None or stale; caller handles both
+
+
+def _gamma_lookup(
+    client: "httpx.Client",
+    base_url: str,
+    condition_id: str,
+) -> "dict[str, Any] | None":
+    """Query gamma API by condition_id. Returns market dict or None."""
+    try:
+        resp = client.get(
+            f"{base_url}/markets", params={"condition_id": condition_id}
+        )
+        resp.raise_for_status()
+        results = resp.json()
+        if isinstance(results, list):
+            return results[0] if results else None
+        if isinstance(results, dict) and results:
+            return results
+        return None
+    except Exception:
+        return None
+
+
+def _is_stale_amm_market(data: "dict[str, Any]") -> bool:
+    """
+    Detect AMM-era markets returned as false positives by the gamma API.
+    These have outcomePrices=["0","0"] with resolved=None — they never
+    properly resolved and can't be used for resolution checks.
+    """
+    raw = data.get("outcomePrices") or ["0.5", "0.5"]
+    if isinstance(raw, str):
+        try:
+            import json as _j
+            raw = _j.loads(raw)
+        except Exception:
+            return False
+    return (
+        len(raw) >= 2
+        and str(raw[0]) == "0"
+        and str(raw[1]) == "0"
+        and data.get("resolved") is None
+    )
 
 
 def _kalshi_resolution(market_id: str) -> dict[str, Any] | None:
