@@ -30,7 +30,7 @@ for _p in (str(_COMPOUND_SCRIPTS), str(_RISK_SCRIPTS)):
         sys.path.insert(0, _p)
 
 from config_loader import DATA_DIR, STOP_FILE_PATH  # noqa: E402
-from postmortem import classify_failure, format_failure_entry, append_failure_log  # noqa: E402
+from postmortem import classify_failure, format_failure_entry, append_failure_log, update_patterns  # noqa: E402
 from resolver import run as run_resolver  # noqa: E402
 from metrics import compute_metrics  # noqa: E402
 from take_profit import run_take_profit_checks  # noqa: E402
@@ -102,6 +102,7 @@ def run_postmortem_for_losses() -> int:
         category = classify_failure(trade)
         entry = format_failure_entry(trade, category)
         append_failure_log(entry)
+        update_patterns(trade, category)
         _mark_as_processed(trade_id)
         count += 1
 

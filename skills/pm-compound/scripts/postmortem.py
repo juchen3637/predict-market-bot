@@ -11,12 +11,15 @@ repeating known mistakes.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 FAILURE_LOG = Path(__file__).parent.parent / "references" / "failure_log.md"
+
+_PATTERNS_RE = re.compile(r"<!-- PATTERNS_JSON: (\{.*?\}) -->", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -40,7 +43,6 @@ def classify_failure(trade: dict) -> str:
     Auto-classify failure based on trade metadata.
     Falls back to 'unknown' — manual reclassification is encouraged.
     """
-    p_model = float(trade.get("p_model", 0.5))
     edge = abs(float(trade.get("edge", 0)))
     models_responded = int(trade.get("models_responded", 5))
     rejection_reason = trade.get("rejection_reason", "")
@@ -57,6 +59,61 @@ def classify_failure(trade: dict) -> str:
     # Otherwise assume calibration issue
     return "bad_calibration"
 
+
+# ---------------------------------------------------------------------------
+# PATTERNS_JSON — machine-readable feedback for pm-scan
+# ---------------------------------------------------------------------------
+
+def _read_patterns() -> dict:
+    """Read the current PATTERNS_JSON block from failure_log.md."""
+    try:
+        match = _PATTERNS_RE.search(FAILURE_LOG.read_text())
+        if match:
+            return json.loads(match.group(1))
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {
+        "market_ids_to_avoid": [],
+        "failure_patterns_by_category": {k: [] for k in FAILURE_CATEGORIES},
+    }
+
+
+def _write_patterns(patterns: dict) -> None:
+    """Rewrite the PATTERNS_JSON block in-place within failure_log.md."""
+    try:
+        content = FAILURE_LOG.read_text()
+        new_block = f"<!-- PATTERNS_JSON: {json.dumps(patterns)} -->"
+        updated = _PATTERNS_RE.sub(new_block, content)
+        FAILURE_LOG.write_text(updated)
+    except OSError:
+        pass
+
+
+def update_patterns(trade: dict, category: str) -> None:
+    """Update machine-readable PATTERNS_JSON after a failure is classified.
+
+    Adds the market_id to market_ids_to_avoid (so the scanner deprioritizes
+    it on future cycles) and tracks it under its failure category.
+    """
+    patterns = _read_patterns()
+
+    market_id = trade.get("market_id", "")
+    if market_id and market_id not in patterns["market_ids_to_avoid"]:
+        patterns["market_ids_to_avoid"].append(market_id)
+
+    by_cat = patterns.setdefault(
+        "failure_patterns_by_category", {k: [] for k in FAILURE_CATEGORIES}
+    )
+    cat_list = by_cat.setdefault(category, [])
+    if market_id and market_id not in cat_list:
+        cat_list.append(market_id)
+
+    _write_patterns(patterns)
+
+
+# ---------------------------------------------------------------------------
+# Failure Log
+# ---------------------------------------------------------------------------
 
 def format_failure_entry(trade: dict, category: str) -> str:
     """Format a failure log entry in Markdown."""
@@ -97,6 +154,7 @@ def main() -> None:
     category = classify_failure(trade)
     entry = format_failure_entry(trade, category)
     append_failure_log(entry)
+    update_patterns(trade, category)
 
     print(json.dumps({
         "trade_id": trade.get("trade_id"),
