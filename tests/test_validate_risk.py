@@ -147,7 +147,7 @@ def test_validate_ensemble_gate_fails():
 
 
 def test_validate_max_positions_gate_fails():
-    portfolio = {**PORTFOLIO_OK, "open_positions": 15}
+    portfolio = {**PORTFOLIO_OK, "open_positions": 15, "open_positions_by_platform": {"unknown": 15}}
     with patch("validate_risk.check_kill_switch", return_value=False):
         decision = validate(
             signal=SIGNAL_OK,

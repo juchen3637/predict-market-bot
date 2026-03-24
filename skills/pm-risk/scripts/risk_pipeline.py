@@ -361,6 +361,7 @@ def main() -> None:
     open_market_families = load_open_market_families()
     max_per_family = settings.get("risk", {}).get("max_positions_per_family", 2)
     approved_count = 0
+    approved_count_by_platform: dict[str, int] = {}
 
     orders = []
     for i, signal in enumerate(actionable, 1):
@@ -413,10 +414,17 @@ def main() -> None:
             })
             continue
 
-        # Inject running open_positions count so batch self-limits
+        # Inject running open_positions count so batch self-limits (per platform)
+        signal_platform = signal.get("platform", "unknown")
+        base_by_platform = portfolio_state.get("open_positions_by_platform", {})
+        batch_by_platform = {
+            p: base_by_platform.get(p, 0) + approved_count_by_platform.get(p, 0)
+            for p in set(list(base_by_platform.keys()) + list(approved_count_by_platform.keys()) + [signal_platform])
+        }
         batch_portfolio = {
             **portfolio_state,
             "open_positions": portfolio_state["open_positions"] + approved_count,
+            "open_positions_by_platform": batch_by_platform,
         }
 
         order = process_signal(signal, settings, bankroll, batch_portfolio)
@@ -424,6 +432,7 @@ def main() -> None:
         # Execute approved orders
         if order["risk_approved"]:
             approved_count += 1
+            approved_count_by_platform[signal_platform] = approved_count_by_platform.get(signal_platform, 0) + 1
             open_market_ids.add(market_id)
             open_market_families[family] = open_market_families.get(family, 0) + 1
             try:

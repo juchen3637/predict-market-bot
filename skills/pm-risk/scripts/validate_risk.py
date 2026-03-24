@@ -47,9 +47,16 @@ class RiskDecision:
 def load_portfolio_state() -> dict[str, Any]:
     """Compute current portfolio state from trade log."""
     if not TRADE_LOG_PATH.exists():
-        return {"open_positions": 0, "current_drawdown": 0.0, "daily_pnl": 0.0, "peak_value": 1.0}
+        return {
+            "open_positions": 0,
+            "open_positions_by_platform": {},
+            "current_drawdown": 0.0,
+            "daily_pnl": 0.0,
+            "peak_value": 1.0,
+        }
 
     open_positions = 0
+    open_positions_by_platform: dict[str, int] = {}
     total_pnl = 0.0
     daily_pnl = 0.0
     peak_value = 1.0
@@ -69,6 +76,8 @@ def load_portfolio_state() -> dict[str, Any]:
                     continue
                 if trade.get("outcome") is None:
                     open_positions += 1
+                    platform = trade.get("platform", "unknown")
+                    open_positions_by_platform[platform] = open_positions_by_platform.get(platform, 0) + 1
                 elif trade.get("pnl") is not None:
                     pnl = float(trade["pnl"])
                     total_pnl += pnl
@@ -90,6 +99,7 @@ def load_portfolio_state() -> dict[str, Any]:
 
     return {
         "open_positions": open_positions,
+        "open_positions_by_platform": open_positions_by_platform,
         "current_drawdown": drawdown,
         "daily_pnl": daily_pnl,
         "daily_loss_pct": daily_loss_pct,
@@ -260,9 +270,15 @@ def validate(
     if not check_position_size(kelly_size_usd, bankroll, risk_cfg["max_position_pct_bankroll"]):
         gates_failed.append("position_size")
 
-    # Gate 4: Max concurrent positions
+    # Gate 4: Max concurrent positions (checked per platform independently)
     gates_checked.append("max_positions")
-    if not check_max_positions(portfolio["open_positions"], risk_cfg["max_concurrent_positions"]):
+    platform = signal.get("platform", "unknown")
+    max_per_platform = risk_cfg.get(
+        "max_concurrent_positions_per_platform",
+        risk_cfg.get("max_concurrent_positions", 15),  # backwards compat
+    )
+    platform_open = portfolio.get("open_positions_by_platform", {}).get(platform, 0)
+    if not check_max_positions(platform_open, max_per_platform):
         gates_failed.append("max_positions")
 
     # Gate 5: Daily loss (VaR proxy)

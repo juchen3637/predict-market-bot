@@ -140,7 +140,7 @@ def test_process_signal_null_p_model_skipped():
 
 
 def test_process_signal_max_positions_blocks():
-    portfolio = {**PORTFOLIO_OK, "open_positions": 15}
+    portfolio = {**PORTFOLIO_OK, "open_positions": 15, "open_positions_by_platform": {"unknown": 15}}
     with patch("validate_risk.check_kill_switch", return_value=False):
         order = process_signal(SIGNAL_LONG, SETTINGS, bankroll=1000.0, portfolio_state=portfolio)
     assert order["order_skipped"] is True
