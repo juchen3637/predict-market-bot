@@ -150,14 +150,15 @@ def test_max_drawdown_only_wins():
     assert compute_max_drawdown(trades) == 0.0
 
 
-def test_max_drawdown_computes_trough():
-    # Peak = 10, then drops to 2 → drawdown = (10-2)/10 = 80%
+def test_max_drawdown_computes_trough(monkeypatch):
+    monkeypatch.setenv("BANKROLL_USD", "100")
+    # bankroll=100, +20 → peak=120, -12 → portfolio=108, dd = 12/120 = 10%
     trades = [
-        _make_trade(outcome="win", pnl=10.0, resolved_at="2026-03-15T10:00:00+00:00"),
-        _make_trade(outcome="loss", pnl=-8.0, resolved_at="2026-03-16T10:00:00+00:00"),
+        _make_trade(outcome="win", pnl=20.0, resolved_at="2026-03-15T10:00:00+00:00"),
+        _make_trade(outcome="loss", pnl=-12.0, resolved_at="2026-03-16T10:00:00+00:00"),
     ]
     dd = compute_max_drawdown(trades)
-    assert dd == pytest.approx(0.8, rel=0.01)
+    assert dd == pytest.approx(12.0 / 120.0, rel=0.01)
 
 
 def test_max_drawdown_exceeds_limit_creates_stop_file(tmp_path, monkeypatch):
@@ -167,10 +168,9 @@ def test_max_drawdown_exceeds_limit_creates_stop_file(tmp_path, monkeypatch):
     trade_log = tmp_path / "trade_log.jsonl"
     stop_file = tmp_path / "STOP"
 
-    # 10 → -8 → drawdown = 80% — must be live trades to trigger STOP
+    # bankroll=100, straight loss of -9 → portfolio=91, dd=9/100=9% > 8% limit
     trades = [
-        _make_trade(outcome="win", pnl=10.0, resolved_at="2026-03-15T10:00:00+00:00", status="placed"),
-        _make_trade(outcome="loss", pnl=-8.0, resolved_at="2026-03-16T10:00:00+00:00", status="placed"),
+        _make_trade(outcome="loss", pnl=-9.0, resolved_at="2026-03-15T10:00:00+00:00", status="placed"),
     ]
     _write_trade_log(trade_log, trades)
 

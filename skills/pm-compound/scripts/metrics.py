@@ -141,23 +141,24 @@ def compute_sharpe(daily_returns: list[float]) -> float | None:
 
 
 def compute_max_drawdown(trades: list[dict]) -> float:
-    """Rolling peak-to-trough drawdown on cumulative P&L series."""
+    """Rolling peak-to-trough drawdown on portfolio value (bankroll + cumulative P&L)."""
     resolved = [t for t in trades if t.get("resolved_at")]
     if not resolved:
         return 0.0
 
     sorted_trades = sorted(resolved, key=lambda t: t["resolved_at"])
 
-    cumulative = 0.0
-    peak = 0.0
+    bankroll = float(os.environ.get("BANKROLL_USD", 100))
+    portfolio_value = bankroll
+    peak = bankroll
     max_dd = 0.0
 
     for trade in sorted_trades:
-        cumulative += float(trade.get("pnl", 0))
-        if cumulative > peak:
-            peak = cumulative
+        portfolio_value += float(trade.get("pnl", 0))
+        if portfolio_value > peak:
+            peak = portfolio_value
         if peak > 0:
-            drawdown = (peak - cumulative) / peak
+            drawdown = (peak - portfolio_value) / peak
             max_dd = max(max_dd, drawdown)
 
     return max_dd
