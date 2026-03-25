@@ -339,8 +339,8 @@ def _render_open_rows(trades: list[dict]) -> str:
             f"<td>{t.get('platform','')}</td>"
             f"<td>{t.get('direction','').upper()}</td>"
             f"<td>${float(t.get('size_usd',0)):.2f}</td>"
-            f"<td>{_fmt(t.get('entry_price'),'.3f')}</td>"
-            f"<td>{_fmt(t.get('p_model'),'.3f')}</td>"
+            f"<td class='col-hide'>{_fmt(t.get('entry_price'),'.3f')}</td>"
+            f"<td class='col-hide'>{_fmt(t.get('p_model'),'.3f')}</td>"
             f"<td>{display_edge:+.1%}</td>"
             f"<td><span class='badge {t.get('status','')}'>{t.get('status','')}</span></td>"
             f"<td>{placed}</td>"
@@ -368,8 +368,8 @@ def _render_resolved_rows(trades: list[dict]) -> str:
         rows.append(
             f"<tr>"
             f"<td title='{market_id}'>{display_title}</td>"
-            f"<td>{t.get('platform','')}</td>"
-            f"<td>{t.get('direction','').upper()}</td>"
+            f"<td class='col-hide'>{t.get('platform','')}</td>"
+            f"<td class='col-hide'>{t.get('direction','').upper()}</td>"
             f"<td>${float(t.get('size_usd',0)):.2f}</td>"
             f"<td>{t.get('outcome','')}</td>"
             f"<td class='{_pnl_class(pnl)}'>{pnl_str}</td>"
@@ -396,23 +396,23 @@ def _render_view(view_id: str, mode: str, mode_data: dict,
   <div class="cards">{cards}</div>
   <section>
     <h2>Open Positions (<span id="{mode}-open-heading">{open_count}</span>)</h2>
-    <table>
+    <div class="table-wrap"><table>
       <thead><tr>
         <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
-        <th>Entry</th><th>p_model</th><th>Edge</th><th>Status</th><th>Placed</th>
+        <th class="col-hide">Entry</th><th class="col-hide">p_model</th><th>Edge</th><th>Status</th><th>Placed</th>
       </tr></thead>
       <tbody id="{mode}-open-tbody">{open_rows}</tbody>
-    </table>
+    </table></div>
   </section>
   <section>
     <h2>Recent Resolved Trades</h2>
-    <table>
+    <div class="table-wrap"><table>
       <thead><tr>
-        <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
+        <th>Title</th><th class="col-hide">Platform</th><th class="col-hide">Dir</th><th>Size</th>
         <th>Outcome</th><th>P&amp;L</th><th>Resolved</th>
       </tr></thead>
       <tbody id="{mode}-resolved-tbody">{resolved_rows}</tbody>
-    </table>
+    </table></div>
   </section>
 </div>"""
 
@@ -426,8 +426,10 @@ _CSS = """
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
          background: #0d1117; color: #e6edf3; padding: 24px; }
   h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 4px; }
-  .subtitle { font-size: 0.8rem; color: #8b949e; margin-bottom: 16px; }
-  .header-right { float: right; display: flex; align-items: center; gap: 12px; margin-top: 2px; }
+  .subtitle { font-size: 0.8rem; color: #8b949e; margin-bottom: 0; }
+  .header { display: flex; justify-content: space-between; align-items: flex-start;
+            flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .header-right { display: flex; align-items: center; gap: 12px; margin-top: 2px; flex-shrink: 0; }
   .timestamp { font-size: 0.75rem; color: #8b949e; }
   .conn-live { font-size: 0.75rem; color: #3fb950; }
   .conn-reconnecting { font-size: 0.75rem; color: #d4a017; }
@@ -453,9 +455,10 @@ _CSS = """
   h2 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; color: #c9d1d9; }
   section { margin-bottom: 32px; }
 
+  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
   th { text-align: left; padding: 8px 12px; background: #161b22;
-        color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; }
+        color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; white-space: nowrap; }
   td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
   tr:hover td { background: #161b22; }
   .empty { color: #8b949e; text-align: center; padding: 20px; }
@@ -468,6 +471,16 @@ _CSS = """
   .badge.placed { background: #1a3a2a; color: #3fb950; }
   .badge.filled { background: #1a3a2a; color: #3fb950; }
   .badge.backtest { background: #2d2a1f; color: #d4a017; }
+
+  @media (max-width: 640px) {
+    body { padding: 12px; }
+    h1 { font-size: 1.1rem; }
+    .card { min-width: 120px; padding: 12px 14px; }
+    .card .value { font-size: 1.2rem; }
+    .tab { padding: 8px 10px; font-size: 0.82rem; }
+    th, td { padding: 6px 8px; }
+    .col-hide { display: none; }
+  }
 """
 
 _JS = """
@@ -497,8 +510,8 @@ _JS = """
       '<td>' + (t.platform || '') + '</td>' +
       '<td>' + (t.direction || '').toUpperCase() + '</td>' +
       '<td>$' + parseFloat(t.size_usd || 0).toFixed(2) + '</td>' +
-      '<td>' + fmtNum(t.entry_price) + '</td>' +
-      '<td>' + fmtNum(t.p_model) + '</td>' +
+      '<td class="col-hide">' + fmtNum(t.entry_price) + '</td>' +
+      '<td class="col-hide">' + fmtNum(t.p_model) + '</td>' +
       '<td>' + (dEdge >= 0 ? '+' : '') + (dEdge * 100).toFixed(1) + '%</td>' +
       '<td><span class="badge ' + (t.status || '') + '">' + (t.status || '') + '</span></td>' +
       '<td>' + placed + '</td>' +
@@ -511,8 +524,8 @@ _JS = """
     var title = (t.title || t.market_id || '').slice(0, 60);
     return '<tr>' +
       '<td title="' + (t.market_id || '') + '">' + title + '</td>' +
-      '<td>' + (t.platform || '') + '</td>' +
-      '<td>' + (t.direction || '').toUpperCase() + '</td>' +
+      '<td class="col-hide">' + (t.platform || '') + '</td>' +
+      '<td class="col-hide">' + (t.direction || '').toUpperCase() + '</td>' +
       '<td>$' + parseFloat(t.size_usd || 0).toFixed(2) + '</td>' +
       '<td>' + (t.outcome || '') + '</td>' +
       '<td class="' + pnlCls(pnl) + '">' + fmtPnl(pnl) + '</td>' +
@@ -611,13 +624,16 @@ def _render_dashboard() -> str:
 <style>{_CSS}</style>
 </head>
 <body>
-<h1>predict-market-bot
-  <span class="header-right">
+<div class="header">
+  <div>
+    <h1>predict-market-bot</h1>
+    <p class="subtitle">Last metrics snapshot: {computed_at}</p>
+  </div>
+  <div class="header-right">
     <span id="conn-status" class="conn-reconnecting">◌ Connecting…</span>
     <span id="last-updated" class="timestamp">Updated {now}</span>
-  </span>
-</h1>
-<p class="subtitle">Last metrics snapshot: {computed_at}</p>
+  </div>
+</div>
 
 <div class="tab-bar">
   <button class="tab" id="tab-paper" onclick="switchTab('paper')">
