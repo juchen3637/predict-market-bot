@@ -173,10 +173,12 @@ def fetch_kalshi_markets(
     # Full pagination returns 40k+ mostly-zero-volume markets; series filtering
     # targets the categories with real trading activity.
     target_series = [
-        "KXBTC", "KXETH",           # crypto
-        "KXINX", "KXFED", "KXCPI",  # economics / macro
-        "KXNHL", "KXNBA", "KXNFL",  # sports
-        "KXPRES", "KXCONG",          # politics
+        "KXBTC", "KXETH", "KXSOL",              # crypto
+        "KXINX", "KXNDX", "KXSPX",              # equity indices
+        "KXFED", "KXCPI", "KXGDP",              # monetary policy / inflation
+        "KXUNEMP", "KXPCE", "KXNFP",            # labour / spending
+        "KXNHL", "KXNBA", "KXNFL",              # sports
+        "KXPRES", "KXCONG", "KXELECT",          # politics
     ]
 
     path = "/trade-api/v2/markets"
@@ -206,7 +208,9 @@ _TICKER_CATEGORY_MAP = {
     "KXBTC": "crypto", "KXETH": "crypto", "KXSOL": "crypto",
     "KXINX": "finance", "KXNDX": "finance", "KXSPX": "finance",
     "KXFED": "economics", "KXCPI": "economics", "KXGDP": "economics",
+    "KXUNEMP": "economics", "KXPCE": "economics", "KXNFP": "economics",
     "KXELECT": "politics", "KXPRES": "politics", "KXCONG": "politics",
+    "KXNHL": "sports", "KXNBA": "sports", "KXNFL": "sports",
 }
 
 
@@ -431,13 +435,13 @@ def main() -> None:
         print(f"[pm-scan] No candidates found. Errors: {errors}", file=sys.stderr)
         sys.exit(1)
 
-    # Cap at 20 per platform so neither dominates the output
+    # Cap at 25 per platform so neither dominates the output
     by_platform: dict[str, list[MarketCandidate]] = {}
     for c in all_candidates:
         by_platform.setdefault(c.platform, []).append(c)
     ranked_all: list[MarketCandidate] = []
     for platform_candidates in by_platform.values():
-        ranked_all.extend(rank_candidates(platform_candidates)[:20])
+        ranked_all.extend(rank_candidates(platform_candidates)[:25])
     ranked = rank_candidates(ranked_all)
 
     # Deprioritize candidates matching known failure patterns from pm-compound
