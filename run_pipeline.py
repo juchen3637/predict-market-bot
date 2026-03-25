@@ -23,6 +23,8 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,6 +41,7 @@ load_dotenv(_PROJECT_ROOT / ".env", override=True)
 # ---------------------------------------------------------------------------
 
 DATA_DIR = _PROJECT_ROOT / "data"
+RUNS_DIR = DATA_DIR / "runs"
 LOGS_DIR = _PROJECT_ROOT / "logs"
 STOP_FILE = _PROJECT_ROOT / "STOP"
 STATE_FILE = DATA_DIR / "pipeline_state.json"
@@ -308,6 +311,194 @@ def _rotate_data_files(logger: logging.Logger) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Run Manifest Helpers
+# ---------------------------------------------------------------------------
+
+def _rotate_run_manifests(logger: logging.Logger) -> None:
+    """Delete run manifest files older than 7 days."""
+    from datetime import timedelta
+    cutoff_mtime = (datetime.now(timezone.utc) - timedelta(days=7)).timestamp()
+    if not RUNS_DIR.exists():
+        return
+    for manifest in RUNS_DIR.glob("run_*.json"):
+        try:
+            if manifest.stat().st_mtime < cutoff_mtime:
+                manifest.unlink()
+                logger.debug("Rotated old run manifest: %s", manifest.name)
+        except OSError:
+            continue
+
+
+def _write_run_manifest(manifest: dict) -> None:
+    """Write run manifest atomically to data/runs/run_{run_id}.json. Never raises."""
+    try:
+        RUNS_DIR.mkdir(parents=True, exist_ok=True)
+        manifest_path = RUNS_DIR / f"run_{manifest['run_id']}.json"
+        fd, tmp = tempfile.mkstemp(dir=RUNS_DIR, prefix=".run_tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(manifest, f, indent=2)
+            os.replace(tmp, manifest_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+    except Exception:
+        pass  # Non-fatal — dashboard manifest is best-effort
+
+
+def _update_stage(manifest: dict, stage: str, **updates) -> dict:
+    """Return a new manifest dict with the given stage fields updated. Never mutates."""
+    return {
+        **manifest,
+        "stages": {
+            **manifest["stages"],
+            stage: {**manifest["stages"][stage], **updates},
+        },
+    }
+
+
+def _extract_scan_counts(data: bytes) -> dict:
+    try:
+        d = json.loads(data)
+        return {"candidates": len(d.get("candidates", []))}
+    except Exception:
+        return {"candidates": 0}
+
+
+def _extract_research_counts(data: bytes) -> dict:
+    try:
+        d = json.loads(data)
+        candidates = d.get("candidates", [])
+        return {
+            "candidates": len(candidates),
+            "cache_hits": sum(1 for c in candidates if c.get("cache_hit")),
+            "fresh_fetches": sum(
+                1 for c in candidates
+                if not c.get("cache_hit") and not c.get("research_skipped")
+            ),
+            "low_confidence": sum(1 for c in candidates if c.get("low_confidence")),
+            "skipped": sum(1 for c in candidates if c.get("research_skipped")),
+        }
+    except Exception:
+        return {}
+
+
+def _extract_predict_counts(data: bytes) -> dict:
+    try:
+        d = json.loads(data)
+        signals = d.get("signals", [])
+        signaled = [s for s in signals if not s.get("predict_skipped")]
+        edges = [abs(float(s["edge"])) for s in signaled if s.get("edge") is not None]
+        return {
+            "signaled": len(signaled),
+            "skipped": len(signals) - len(signaled),
+            "cache_hits": sum(1 for s in signals if s.get("cache_hit")),
+            "avg_edge": round(sum(edges) / len(edges), 4) if edges else 0.0,
+        }
+    except Exception:
+        return {}
+
+
+def _extract_risk_counts(data: bytes) -> dict:
+    try:
+        d = json.loads(data)
+        orders = d.get("orders", [])
+        return {
+            "approved": sum(1 for o in orders if o.get("risk_approved")),
+            "blocked": sum(1 for o in orders if o.get("order_skipped")),
+        }
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Pipeline Setup Helpers
+# ---------------------------------------------------------------------------
+
+def _load_settings() -> dict:
+    """Load settings.yaml; returns empty dict on any error."""
+    import yaml
+    settings_path = _PROJECT_ROOT / "config" / "settings.yaml"
+    try:
+        with open(settings_path) as _sf:
+            return yaml.safe_load(_sf) or {}
+    except Exception:
+        return {}
+
+
+def _init_manifest(run_id: str, started_at: str) -> dict:
+    """Return a fresh run manifest dict with all stages in 'pending' state."""
+    return {
+        "run_id": run_id,
+        "started_at": started_at,
+        "completed_at": None,
+        "status": "running",
+        "stages": {
+            "scan": {"status": "pending"},
+            "research": {"status": "pending"},
+            "predict": {"status": "pending"},
+            "risk": {"status": "pending"},
+        },
+        "trades_placed": 0,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stage Executor (shared by all four stages)
+# ---------------------------------------------------------------------------
+
+def _execute_stage(
+    logger: logging.Logger,
+    manifest: dict,
+    stage_name: str,
+    script: Path,
+    extra_args: list[str] | None = None,
+    dry_run: bool = False,
+    timeout: int = 600,
+    extract_counts=None,
+    validate_json: bool = True,
+) -> tuple[bytes, bool, dict]:
+    """
+    Run one pipeline stage subprocess, updating the run manifest before and after.
+
+    Returns:
+        (stdout_bytes, success, updated_manifest)
+
+    On failure the manifest stage is marked 'failed' and top-level status is
+    set to 'failed'; the caller is responsible for state persistence and return.
+    """
+    manifest = _update_stage(manifest, stage_name,
+                             status="running",
+                             started_at=datetime.now(timezone.utc).isoformat())
+    _write_run_manifest(manifest)
+    stage_start = time.monotonic()
+
+    output, rc = _run_stage(logger, script, extra_args=extra_args,
+                            dry_run=dry_run, timeout=timeout)
+
+    valid = (not validate_json) or _validate_json_output(output, stage_name, logger)
+    if rc != 0 or not valid:
+        error = f"rc={rc}" if rc != 0 else "invalid JSON output"
+        logger.error("Stage %s failed (rc=%d, valid=%s)", stage_name, rc, valid)
+        manifest = _update_stage(manifest, stage_name, status="failed", error=error)
+        manifest = {**manifest, "status": "failed",
+                    "completed_at": datetime.now(timezone.utc).isoformat()}
+        _write_run_manifest(manifest)
+        return output, False, manifest
+
+    counts = extract_counts(output) if extract_counts else {}
+    manifest = _update_stage(manifest, stage_name,
+                             status="completed",
+                             completed_at=datetime.now(timezone.utc).isoformat(),
+                             duration_s=round(time.monotonic() - stage_start, 1),
+                             **counts)
+    _write_run_manifest(manifest)
+    return output, True, manifest
+
+
+# ---------------------------------------------------------------------------
 # Main Pipeline
 # ---------------------------------------------------------------------------
 
@@ -318,7 +509,6 @@ def run_pipeline(dry_run: bool = False) -> int:
     Returns:
         0 on success, 1 on failure.
     """
-    import yaml
     logger = _setup_logging()
     now = datetime.now(timezone.utc).isoformat()
     state = _load_state()
@@ -326,99 +516,84 @@ def run_pipeline(dry_run: bool = False) -> int:
 
     logger.info("=== Pipeline cycle starting (dry_run=%s) ===", dry_run)
 
-    settings: dict = {}
-    settings_path = _PROJECT_ROOT / "config" / "settings.yaml"
-    try:
-        with open(settings_path) as _sf:
-            settings = yaml.safe_load(_sf)
-    except Exception:
-        pass
-
+    settings = _load_settings()
     stage_timeouts = settings.get("pipeline", {}).get("stage_timeouts", {})
 
-    # Rotate old files
     _rotate_logs(logger)
     _rotate_data_files(logger)
     _rotate_research_cache(logger, settings)
+    _rotate_run_manifests(logger)
 
-    # Pre-flight checks
     if _run_preflight(logger):
         _save_state(state)
         return 1
 
     ts = _ts()
+    manifest: dict = _init_manifest(ts, now)
+    _write_run_manifest(manifest)
 
-    # ---- Stage 1: Scan ----
-    scan_out, rc = _run_stage(
-        logger, SCAN_SCRIPT, dry_run=dry_run,
-        timeout=stage_timeouts.get("scan", 120),
-    )
-    if rc != 0 or not _validate_json_output(scan_out, "scan", logger):
-        logger.error("Scan stage failed (rc=%d)", rc)
+    def _fail(updated_manifest: dict) -> int:
         state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
         _handle_consecutive_failures(state, logger)
         _save_state(state)
-        return 1
+        return 1  # noqa: not used as return value — caller returns this
 
-    # Save scan output
+    # ---- Stage 1: Scan ----
     DATA_DIR.mkdir(exist_ok=True)
+    scan_out, ok, manifest = _execute_stage(
+        logger, manifest, "scan", SCAN_SCRIPT,
+        dry_run=dry_run, timeout=stage_timeouts.get("scan", 120),
+        extract_counts=_extract_scan_counts,
+    )
+    if not ok:
+        return _fail(manifest)
     scan_file = DATA_DIR / f"candidates_{ts}.json"
     scan_file.write_bytes(scan_out)
     logger.info("Scan complete → %s", scan_file.name)
 
     # ---- Stage 2: Research ----
-    research_out, rc = _run_stage(
-        logger,
-        RESEARCH_SCRIPT,
+    research_out, ok, manifest = _execute_stage(
+        logger, manifest, "research", RESEARCH_SCRIPT,
         extra_args=["--input", str(scan_file)],
-        dry_run=dry_run,
-        timeout=stage_timeouts.get("research", 600),
+        dry_run=dry_run, timeout=stage_timeouts.get("research", 600),
+        extract_counts=_extract_research_counts,
     )
-    if rc != 0 or not _validate_json_output(research_out, "research", logger):
-        logger.error("Research stage failed (rc=%d)", rc)
-        state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
-        _handle_consecutive_failures(state, logger)
-        _save_state(state)
-        return 1
-
+    if not ok:
+        return _fail(manifest)
     enriched_file = DATA_DIR / f"enriched_{ts}.json"
     enriched_file.write_bytes(research_out)
     logger.info("Research complete → %s", enriched_file.name)
 
     # ---- Stage 3: Predict ----
-    predict_out, rc = _run_stage(
-        logger,
-        PREDICT_SCRIPT,
+    predict_out, ok, manifest = _execute_stage(
+        logger, manifest, "predict", PREDICT_SCRIPT,
         extra_args=["--input", str(enriched_file)],
-        dry_run=dry_run,
-        timeout=stage_timeouts.get("predict", 1200),
+        dry_run=dry_run, timeout=stage_timeouts.get("predict", 1200),
+        extract_counts=_extract_predict_counts,
     )
-    if rc != 0 or not _validate_json_output(predict_out, "predict", logger):
-        logger.error("Predict stage failed (rc=%d)", rc)
-        state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
-        _handle_consecutive_failures(state, logger)
-        _save_state(state)
-        return 1
-
+    if not ok:
+        return _fail(manifest)
     signals_file = DATA_DIR / f"signals_{ts}.json"
     signals_file.write_bytes(predict_out)
     logger.info("Predict complete → %s", signals_file.name)
 
     # ---- Stage 4: Risk / Execute ----
-    _risk_out, rc = _run_stage(
-        logger,
-        RISK_SCRIPT,
+    risk_out, ok, manifest = _execute_stage(
+        logger, manifest, "risk", RISK_SCRIPT,
         extra_args=["--file", str(signals_file)],
-        dry_run=dry_run,
-        timeout=stage_timeouts.get("risk", 300),
+        dry_run=dry_run, timeout=stage_timeouts.get("risk", 300),
+        extract_counts=_extract_risk_counts,
+        validate_json=False,  # Risk stage may not output valid JSON on partial fills
     )
-    if rc != 0:
-        logger.error("Risk stage failed (rc=%d)", rc)
-        state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
-        _handle_consecutive_failures(state, logger)
-        _save_state(state)
-        return 1
+    if not ok:
+        return _fail(manifest)
 
+    risk_counts = manifest["stages"]["risk"]
+    manifest = {**manifest,
+                "status": "completed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "trades_placed": risk_counts.get("approved", 0)}
+    _write_run_manifest(manifest)
     logger.info("Risk/execute stage complete")
 
     # Success

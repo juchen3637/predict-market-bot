@@ -38,6 +38,8 @@ predict:
     claude_sonnet: 0.40     # claude-sonnet-4-6
     gpt5_mini: 0.35         # gpt-5-mini-2025-08-07
     gemini_flash: 0.25      # gemini-2.5-flash
+  signal_cache_ttl_hours: 2              # Reuse cached prediction if entry is this fresh
+  signal_cache_price_move_threshold: 0.03  # Invalidate cache if YES price moves more than 3%
 
 risk:
   max_positions_per_family: 2        # Max open positions sharing the same underlying event

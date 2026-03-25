@@ -56,6 +56,7 @@ _PROJECT_ROOT = _SCRIPT_DIR.parents[2]  # skills/pm-predict/scripts → project 
 
 sys.path.insert(0, str(_SCRIPT_DIR))
 
+import predict_cache  # noqa: E402
 from brier_score import compute_rolling_brier  # noqa: E402
 from llm_consensus import ConsensusResult, run_consensus  # noqa: E402
 from xgboost_features import ModelNotTrainedError, predict as xgboost_predict  # noqa: E402
@@ -102,10 +103,17 @@ def build_research_summary(candidate: dict[str, Any]) -> str:
 def process_candidate(
     candidate: dict[str, Any],
     min_edge_to_signal: float,
+    cache: dict | None = None,
+    ttl_hours: float = 2.0,
+    price_threshold: float = 0.03,
 ) -> dict[str, Any]:
     """
     Run LLM consensus + optional XGBoost for one candidate.
     Returns a signal dict matching the output schema.
+
+    When cache, ttl_hours, and price_threshold are provided the function
+    checks the cache before calling the LLM ensemble.  Cache is bypassed
+    entirely for research_skipped candidates.
     """
     market_id = candidate.get("market_id", "unknown")
     title = candidate.get("title", "")
@@ -120,7 +128,7 @@ def process_candidate(
         "low_confidence": candidate.get("low_confidence", False),
     }
 
-    # --- Skip candidates that research already flagged ---
+    # --- Skip candidates that research already flagged (bypass cache) ---
     if candidate.get("research_skipped"):
         return {
             **base,
@@ -131,7 +139,52 @@ def process_candidate(
             "xgboost_prob": None,
             "predict_skipped": True,
             "skip_reason": candidate.get("skip_reason") or "research_skipped",
+            "cache_hit": False,
         }
+
+    # --- Cache lookup (only when a cache dict is supplied) ---
+    if cache is not None:
+        try:
+            cached_signal = predict_cache.lookup(
+                cache, market_id, current_yes_price, ttl_hours, price_threshold
+            )
+        except Exception as exc:
+            print(
+                f"[pm-predict] Cache lookup error for {market_id}: {exc}",
+                file=sys.stderr,
+            )
+            cached_signal = None
+
+        if cached_signal is not None:
+            # Recompute edge + direction with the live price to stay accurate.
+            # If p_model is None the cached entry is corrupt — treat as a miss
+            # and fall through to the LLM block below.
+            p_model = cached_signal.get("p_model")
+            if p_model is not None:
+                edge = round(float(p_model) - current_yes_price, 4)
+                direction = "long" if edge > 0 else "short"
+                # Re-apply min-edge gate with the refreshed edge.
+                if abs(edge) < min_edge_to_signal:
+                    return {
+                        **base,
+                        **cached_signal,
+                        "edge": edge,
+                        "direction": direction,
+                        "predict_skipped": True,
+                        "skip_reason": (
+                            f"edge {edge:.4f} below min_edge_to_signal {min_edge_to_signal}"
+                        ),
+                        "cache_hit": True,
+                    }
+                return {
+                    **base,
+                    **cached_signal,
+                    "edge": edge,
+                    "direction": direction,
+                    "predict_skipped": False,
+                    "skip_reason": None,
+                    "cache_hit": True,
+                }
 
     # --- Build research summary for LLM context ---
     research_summary = build_research_summary(candidate)
@@ -161,6 +214,7 @@ def process_candidate(
             "xgboost_prob": None,
             "predict_skipped": True,
             "skip_reason": f"llm_consensus error: {exc}",
+            "cache_hit": False,
         }
 
     # --- XGBoost (optional — falls back gracefully if not trained) ---
@@ -200,9 +254,10 @@ def process_candidate(
             "xgboost_prob": xgboost_prob,
             "predict_skipped": True,
             "skip_reason": f"edge {edge:.4f} below min_edge_to_signal {min_edge_to_signal}",
+            "cache_hit": False,
         }
 
-    return {
+    signal = {
         **base,
         "p_model": p_model,
         "edge": edge,
@@ -211,7 +266,10 @@ def process_candidate(
         "xgboost_prob": xgboost_prob,
         "predict_skipped": False,
         "skip_reason": None,
+        "cache_hit": False,
     }
+
+    return signal
 
 
 # ---------------------------------------------------------------------------
@@ -232,6 +290,8 @@ def main() -> None:
     settings = load_settings()
     predict_cfg = settings["predict"]
     min_edge_to_signal: float = predict_cfg["min_edge_to_signal"]
+    ttl_hours: float = float(predict_cfg.get("signal_cache_ttl_hours", 2.0))
+    price_threshold: float = float(predict_cfg.get("signal_cache_price_move_threshold", 0.03))
 
     # Read enriched research output from --input file or stdin
     try:
@@ -256,12 +316,58 @@ def main() -> None:
         file=sys.stderr,
     )
 
+    # --- Load signal cache ---
+    cache_path = _PROJECT_ROOT / "data" / "predict_cache.json"
+    try:
+        cache: dict = predict_cache.load_cache(cache_path)
+    except Exception as exc:
+        print(f"[pm-predict] Warning: cache load failed: {exc}", file=sys.stderr)
+        cache = {}
+
+    cache_hits = 0
+    cache_misses = 0
+
     signals = []
     for i, candidate in enumerate(candidates, 1):
         market_id = candidate.get("market_id", f"unknown_{i}")
         print(f"[pm-predict] [{i}/{len(candidates)}] {market_id}", file=sys.stderr)
-        signal = process_candidate(candidate, min_edge_to_signal)
+
+        signal = process_candidate(
+            candidate,
+            min_edge_to_signal,
+            cache=cache,
+            ttl_hours=ttl_hours,
+            price_threshold=price_threshold,
+        )
+
+        if signal.get("cache_hit"):
+            cache_hits += 1
+        elif not candidate.get("research_skipped"):
+            cache_misses += 1
+            # Update cache with the new signal result when p_model is valid.
+            if signal.get("p_model") is not None:
+                try:
+                    cache = predict_cache.store(
+                        cache, market_id, float(candidate.get("current_yes_price", 0.5)), signal
+                    )
+                except Exception as exc:
+                    print(
+                        f"[pm-predict] Warning: cache store failed for {market_id}: {exc}",
+                        file=sys.stderr,
+                    )
+
         signals.append(signal)
+
+    print(
+        f"[pm-predict] Signal cache: {cache_hits} hits, {cache_misses} misses",
+        file=sys.stderr,
+    )
+
+    # --- Save signal cache ---
+    try:
+        predict_cache.save_cache(cache_path, cache, ttl_hours=ttl_hours)
+    except Exception as exc:
+        print(f"[pm-predict] Warning: cache save failed: {exc}", file=sys.stderr)
 
     # --- Brier Score ---
     print("[pm-predict] Computing rolling Brier Score...", file=sys.stderr)

@@ -27,6 +27,7 @@ from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = _PROJECT_ROOT / "data"
+RUNS_DIR = DATA_DIR / "runs"
 METRICS_PATH = DATA_DIR / "performance_metrics.json"
 TRADE_LOG_PATH = DATA_DIR / "trade_log.jsonl"
 COST_LOG_PATH = DATA_DIR / "ai_cost_log.jsonl"
@@ -76,6 +77,19 @@ _stop_event = threading.Event()
 # File watcher background thread
 # ---------------------------------------------------------------------------
 
+def _runs_dir_mtime() -> float:
+    """Return the newest mtime among run manifest files, or 0 if none exist."""
+    if not RUNS_DIR.exists():
+        return 0.0
+    newest = 0.0
+    for f in RUNS_DIR.glob("run_*.json"):
+        try:
+            newest = max(newest, f.stat().st_mtime)
+        except OSError:
+            continue
+    return newest
+
+
 def _file_watcher() -> None:
     """Poll watched files every 1s; broadcast SSE update on any mtime change."""
     mtimes: dict[Path, float | None] = {}
@@ -85,7 +99,9 @@ def _file_watcher() -> None:
         except OSError:
             mtimes[p] = None
 
+    runs_mtime: float = _runs_dir_mtime()
     heartbeat_tick = 0
+
     while not _stop_event.is_set():
         time.sleep(1)
         heartbeat_tick += 1
@@ -107,7 +123,20 @@ def _file_watcher() -> None:
             except Exception:
                 pass
             heartbeat_tick = 0
-        elif heartbeat_tick >= 15:
+
+        # Check for run manifest changes → emit run_update event
+        new_runs_mtime = _runs_dir_mtime()
+        if new_runs_mtime != runs_mtime:
+            runs_mtime = new_runs_mtime
+            try:
+                newest_runs = _read_runs(max_runs=1)
+                if newest_runs:
+                    payload = json.dumps(newest_runs[0])
+                    _sse_clients.broadcast(f"event: run_update\ndata: {payload}\n\n")
+            except Exception:
+                pass
+
+        if not changed and heartbeat_tick >= 15:
             _sse_clients.broadcast(": keepalive\n\n")
             heartbeat_tick = 0
 
@@ -153,6 +182,36 @@ def _read_trades() -> list[dict]:
     except OSError:
         pass
     return trades
+
+
+def _read_runs(max_runs: int = 50) -> list[dict]:
+    """Read run manifests from data/runs/, sorted newest-first."""
+    if not RUNS_DIR.exists():
+        return []
+    manifests = []
+    candidates = sorted(
+        RUNS_DIR.glob("run_*.json"),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )[:max_runs]
+    for f in candidates:
+        try:
+            manifests.append(json.loads(f.read_text()))
+        except (json.JSONDecodeError, OSError):
+            continue
+    return manifests
+
+
+def _read_run_manifest(run_id: str) -> dict | None:
+    """Read a specific run manifest. Returns None if not found/invalid."""
+    # Sanitize: reject traversal attempts
+    if not run_id or "/" in run_id or ".." in run_id:
+        return None
+    manifest_path = RUNS_DIR / f"run_{run_id}.json"
+    try:
+        return json.loads(manifest_path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
 
 
 def _read_daily_ai_cost() -> float:
@@ -418,184 +477,10 @@ def _render_view(view_id: str, mode: str, mode_data: dict,
 
 
 # ---------------------------------------------------------------------------
-# CSS and JS (static strings — no f-string escaping needed)
+# CSS and JS (kept in dashboard_assets.py to stay under 800-line limit)
 # ---------------------------------------------------------------------------
 
-_CSS = """
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-         background: #0d1117; color: #e6edf3; padding: 24px; }
-  h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 4px; }
-  .subtitle { font-size: 0.8rem; color: #8b949e; margin-bottom: 0; }
-  .header { display: flex; justify-content: space-between; align-items: flex-start;
-            flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
-  .header-right { display: flex; align-items: center; gap: 12px; margin-top: 2px; flex-shrink: 0; }
-  .timestamp { font-size: 0.75rem; color: #8b949e; }
-  .conn-live { font-size: 0.75rem; color: #3fb950; }
-  .conn-reconnecting { font-size: 0.75rem; color: #d4a017; }
-
-  .tab-bar { display: flex; gap: 8px; margin-bottom: 24px; border-bottom: 1px solid #30363d; padding-bottom: 0; }
-  .tab { background: none; border: none; color: #8b949e; font-size: 0.9rem; font-weight: 500;
-          padding: 8px 16px; cursor: pointer; border-bottom: 2px solid transparent;
-          margin-bottom: -1px; transition: color 0.15s; }
-  .tab:hover { color: #e6edf3; }
-  .tab.active { color: #58a6ff; border-bottom-color: #58a6ff; }
-  .tab .count { font-size: 0.72rem; background: #21262d; border-radius: 10px;
-                padding: 1px 6px; margin-left: 6px; }
-
-  .cards { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 32px; }
-  .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px;
-           padding: 16px 20px; min-width: 140px; flex: 1; }
-  .card .label { font-size: 0.72rem; color: #8b949e; text-transform: uppercase;
-                  letter-spacing: .05em; margin-bottom: 6px; }
-  .card .value { font-size: 1.5rem; font-weight: 600; }
-  .pos .value { color: #3fb950; }
-  .neg .value { color: #f85149; }
-
-  h2 { font-size: 1rem; font-weight: 600; margin-bottom: 12px; color: #c9d1d9; }
-  section { margin-bottom: 32px; }
-
-  .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
-  th { text-align: left; padding: 8px 12px; background: #161b22;
-        color: #8b949e; font-weight: 500; border-bottom: 1px solid #30363d; white-space: nowrap; }
-  td { padding: 8px 12px; border-bottom: 1px solid #21262d; }
-  tr:hover td { background: #161b22; }
-  .empty { color: #8b949e; text-align: center; padding: 20px; }
-  .pos { color: #3fb950; }
-  .neg { color: #f85149; }
-
-  .badge { font-size: 0.7rem; padding: 2px 8px; border-radius: 12px;
-            font-weight: 500; text-transform: uppercase; }
-  .badge.paper { background: #1f3a5f; color: #58a6ff; }
-  .badge.placed { background: #1a3a2a; color: #3fb950; }
-  .badge.filled { background: #1a3a2a; color: #3fb950; }
-  .badge.backtest { background: #2d2a1f; color: #d4a017; }
-
-  @media (max-width: 640px) {
-    body { padding: 12px; }
-    h1 { font-size: 1.1rem; }
-    .card { min-width: 120px; padding: 12px 14px; }
-    .card .value { font-size: 1.2rem; }
-    .tab { padding: 8px 10px; font-size: 0.82rem; }
-    th, td { padding: 6px 8px; }
-    .col-hide { display: none; }
-  }
-"""
-
-_JS = """
-(function() {
-  function setEl(id, html) {
-    var el = document.getElementById(id);
-    if (el) el.innerHTML = html;
-  }
-
-  function fmtPct(v) { return v != null ? (v * 100).toFixed(1) + '%' : '—'; }
-  function fmtNum(v, d) { return v != null ? parseFloat(v).toFixed(d != null ? d : 3) : '—'; }
-  function fmtPnl(v) {
-    if (v == null) return '—';
-    var f = parseFloat(v);
-    return (f >= 0 ? '+$' : '-$') + Math.abs(f).toFixed(2);
-  }
-  function pnlCls(v) { return v == null ? '' : (parseFloat(v) >= 0 ? 'pos' : 'neg'); }
-
-  function openRow(t) {
-    var edge = t.edge || 0;
-    var dir = (t.direction || '').toLowerCase();
-    var dEdge = (dir === 'yes' || dir === 'long') ? edge : -edge;
-    var title = (t.title || t.market_id || '').slice(0, 60);
-    var placed = (t.placed_at || '').slice(0, 16).replace('T', ' ');
-    return '<tr>' +
-      '<td title="' + (t.market_id || '') + '">' + title + '</td>' +
-      '<td>' + (t.platform || '') + '</td>' +
-      '<td>' + (t.direction || '').toUpperCase() + '</td>' +
-      '<td>$' + parseFloat(t.size_usd || 0).toFixed(2) + '</td>' +
-      '<td class="col-hide">' + fmtNum(t.entry_price) + '</td>' +
-      '<td class="col-hide">' + fmtNum(t.p_model) + '</td>' +
-      '<td>' + (dEdge >= 0 ? '+' : '') + (dEdge * 100).toFixed(1) + '%</td>' +
-      '<td><span class="badge ' + (t.status || '') + '">' + (t.status || '') + '</span></td>' +
-      '<td>' + placed + '</td>' +
-      '</tr>';
-  }
-
-  function resolvedRow(t) {
-    var pnl = t.pnl;
-    var resolved = (t.resolved_at || '').slice(0, 16).replace('T', ' ');
-    var title = (t.title || t.market_id || '').slice(0, 60);
-    return '<tr>' +
-      '<td title="' + (t.market_id || '') + '">' + title + '</td>' +
-      '<td class="col-hide">' + (t.platform || '') + '</td>' +
-      '<td class="col-hide">' + (t.direction || '').toUpperCase() + '</td>' +
-      '<td>$' + parseFloat(t.size_usd || 0).toFixed(2) + '</td>' +
-      '<td>' + (t.outcome || '') + '</td>' +
-      '<td class="' + pnlCls(pnl) + '">' + fmtPnl(pnl) + '</td>' +
-      '<td>' + resolved + '</td>' +
-      '</tr>';
-  }
-
-  function updateMode(mode, md, aiCost, brier) {
-    if (!md) return;
-    var m = md.metrics || {};
-    setEl(mode + '-win-rate', fmtPct(m.win_rate));
-    setEl(mode + '-max-drawdown', fmtPct(m.max_drawdown));
-    setEl(mode + '-profit-factor', fmtNum(m.profit_factor));
-    setEl(mode + '-brier', fmtNum(brier));
-    setEl(mode + '-trade-count', m.trade_count || 0);
-    setEl(mode + '-open-count', md.open_count || 0);
-    setEl(mode + '-open-heading', md.open_count || 0);
-    setEl('count-' + mode, md.open_count || 0);
-
-    var tEl = document.getElementById(mode + '-total-pnl');
-    if (tEl) { tEl.innerHTML = fmtPnl(m.total_pnl); tEl.parentElement.className = 'card ' + pnlCls(m.total_pnl); }
-    var dEl = document.getElementById(mode + '-daily-pnl');
-    if (dEl) { dEl.innerHTML = fmtPnl(md.daily_pnl); dEl.parentElement.className = 'card ' + pnlCls(md.daily_pnl); }
-    setEl(mode + '-ai-cost', '$' + parseFloat(aiCost || 0).toFixed(4));
-
-    var ot = document.getElementById(mode + '-open-tbody');
-    if (ot) ot.innerHTML = md.open_trades && md.open_trades.length ?
-      md.open_trades.map(openRow).join('') :
-      '<tr><td colspan="9" class="empty">No open positions</td></tr>';
-
-    var rt = document.getElementById(mode + '-resolved-tbody');
-    if (rt) rt.innerHTML = md.resolved_trades && md.resolved_trades.length ?
-      md.resolved_trades.map(resolvedRow).join('') :
-      '<tr><td colspan="7" class="empty">No resolved trades yet</td></tr>';
-  }
-
-  function updateDashboard(data) {
-    setEl('last-updated', 'Updated ' + data.updated_at);
-    updateMode('paper', data.paper, data.ai_cost_today, data.brier_score);
-    updateMode('live',  data.live,  data.ai_cost_today, data.brier_score);
-  }
-
-  var statusEl = document.getElementById('conn-status');
-  var es = new EventSource('/events');
-
-  es.onopen = function() {
-    if (statusEl) { statusEl.className = 'conn-live'; statusEl.textContent = '● Live'; }
-  };
-  es.onmessage = function(e) {
-    try { updateDashboard(JSON.parse(e.data)); } catch(err) {}
-  };
-  es.onerror = function() {
-    if (statusEl) { statusEl.className = 'conn-reconnecting'; statusEl.textContent = '◌ Reconnecting…'; }
-  };
-
-  function switchTab(mode) {
-    document.getElementById('view-paper').style.display = mode === 'paper' ? 'block' : 'none';
-    document.getElementById('view-live').style.display  = mode === 'live'  ? 'block' : 'none';
-    document.getElementById('tab-paper').className = 'tab' + (mode === 'paper' ? ' active' : '');
-    document.getElementById('tab-live').className  = 'tab' + (mode === 'live'  ? ' active' : '');
-    try { localStorage.setItem('dashboard_tab', mode); } catch(e) {}
-  }
-  window.switchTab = switchTab;
-  (function() {
-    var saved = 'paper';
-    try { saved = localStorage.getItem('dashboard_tab') || 'paper'; } catch(e) {}
-    switchTab(saved);
-  })();
-})();
-"""
+from dashboard_assets import _CSS, _JS  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -642,10 +527,53 @@ def _render_dashboard() -> str:
   <button class="tab" id="tab-live" onclick="switchTab('live')">
     Live <span class="count" id="count-live">{live_open}</span>
   </button>
+  <button class="tab" id="tab-pipeline" onclick="switchTab('pipeline')">Pipeline</button>
 </div>
 
 {paper_view}
 {live_view}
+
+<div id="view-pipeline" style="display:none">
+  <div class="pipeline-layout">
+    <div class="pipeline-sidebar">
+      <div class="pipeline-sidebar-section">
+        <div class="pipeline-sidebar-label">Live Run</div>
+        <div id="pipeline-stages">
+          <div class="stage-step" data-stage="scan" onclick="selectStage('scan')">
+            <span class="stage-icon pending" id="stage-icon-scan"></span>
+            <span class="stage-name">Scan</span>
+            <span class="stage-dur" id="stage-dur-scan"></span>
+          </div>
+          <div class="stage-step" data-stage="research" onclick="selectStage('research')">
+            <span class="stage-icon pending" id="stage-icon-research"></span>
+            <span class="stage-name">Research</span>
+            <span class="stage-dur" id="stage-dur-research"></span>
+          </div>
+          <div class="stage-step" data-stage="predict" onclick="selectStage('predict')">
+            <span class="stage-icon pending" id="stage-icon-predict"></span>
+            <span class="stage-name">Predict</span>
+            <span class="stage-dur" id="stage-dur-predict"></span>
+          </div>
+          <div class="stage-step" data-stage="risk" onclick="selectStage('risk')">
+            <span class="stage-icon pending" id="stage-icon-risk"></span>
+            <span class="stage-name">Risk</span>
+            <span class="stage-dur" id="stage-dur-risk"></span>
+          </div>
+        </div>
+      </div>
+      <div class="pipeline-sidebar-section">
+        <div class="pipeline-sidebar-label">History (7 days)</div>
+        <div id="pipeline-run-list" class="run-list-scroll">
+          <div class="pipeline-empty" style="padding:16px 0">Loading…</div>
+        </div>
+      </div>
+    </div>
+    <div class="pipeline-main">
+      <div id="pipeline-no-data" class="pipeline-empty">No pipeline runs yet</div>
+      <div id="pipeline-stage-detail" style="display:none"></div>
+    </div>
+  </div>
+</div>
 
 <script>{_JS}</script>
 </body>
@@ -664,6 +592,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_sse()
         elif self.path == "/api/state":
             self._serve_api_state()
+        elif self.path == "/api/runs":
+            self._serve_api_runs()
+        elif self.path.startswith("/api/runs/"):
+            run_id = self.path[len("/api/runs/"):]
+            self._serve_api_run(run_id)
         else:
             self.send_response(404)
             self.end_headers()
@@ -678,6 +611,27 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _serve_api_state(self):
         body = json.dumps(_build_dashboard_data(), indent=2).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_api_runs(self):
+        body = json.dumps(_read_runs(), indent=2).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _serve_api_run(self, run_id: str):
+        manifest = _read_run_manifest(run_id)
+        if manifest is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.dumps(manifest, indent=2).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
