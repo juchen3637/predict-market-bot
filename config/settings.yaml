@@ -44,7 +44,7 @@ risk:
   kelly_fraction: 0.25               # Fractional Kelly multiplier (0.25 = quarter-Kelly)
   max_position_pct_bankroll: 0.05    # Max 5% of bankroll per position
   max_concurrent_positions_per_platform: 15  # Max open positions per platform (kalshi/polymarket independently)
-  max_drawdown_pct: 0.08             # Kill switch at 8% drawdown
+  max_drawdown_pct: 0.15             # Kill switch at 15% drawdown
   max_daily_loss_pct: 0.15           # Stop trading for day at 15% daily loss
   max_slippage_pct: 0.02             # Abort order if slippage exceeds 2%
   var_confidence: 0.95               # VaR at 95% confidence
