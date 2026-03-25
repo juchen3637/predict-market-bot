@@ -100,8 +100,18 @@ def compute_rolling_brier(window_days: int = ROLLING_WINDOW_DAYS) -> dict:
             "message": f"Need at least 10 resolved trades (have {len(trades)})",
         }
 
+    # p_model is always P(YES resolves). For NO trades a "win" means YES did NOT
+    # resolve, so the ground-truth YES outcome is 0, not 1.
+    def _yes_outcome(trade: dict) -> int:
+        direction = (trade.get("direction") or "yes").lower()
+        won = trade.get("outcome") == "win"
+        if direction in ("yes", "long"):
+            return 1 if won else 0
+        else:  # no / short
+            return 0 if won else 1
+
     predictions = [float(t["p_model"]) for t in trades]
-    outcomes = [1 if t["outcome"] == "win" else 0 for t in trades]
+    outcomes = [_yes_outcome(t) for t in trades]
     bs = brier_score(predictions, outcomes)
 
     # Append to history CSV
