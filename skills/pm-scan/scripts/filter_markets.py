@@ -221,7 +221,7 @@ def _kalshi_category(event_ticker: str) -> str:
 # Matches intraday Kalshi crypto price-range markets: KXETH-26MAR2416-B2140
 # These resolve hourly based on price movement — LLMs have no edge here.
 _INTRADAY_CRYPTO_RE = re.compile(
-    r"^KX(ETH|BTC)-\d{2}[A-Z]{3}\d{4}-[BT]\d+$", re.IGNORECASE
+    r"^KX(ETH|BTC)-\d{2}[A-Z]{3}\d{4}-[BT][\d.]+$", re.IGNORECASE
 )
 
 
