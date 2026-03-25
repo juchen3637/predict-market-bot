@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import asdict, dataclass, field
@@ -217,6 +218,18 @@ def _kalshi_category(event_ticker: str) -> str:
     return "other"
 
 
+# Matches intraday Kalshi crypto price-range markets: KXETH-26MAR2416-B2140
+# These resolve hourly based on price movement — LLMs have no edge here.
+_INTRADAY_CRYPTO_RE = re.compile(
+    r"^KX(ETH|BTC)-\d{2}[A-Z]{3}\d{4}-[BT]\d+$", re.IGNORECASE
+)
+
+
+def is_intraday_crypto_range(market_id: str) -> bool:
+    """Return True for short-term hourly ETH/BTC price range Kalshi markets."""
+    return bool(_INTRADAY_CRYPTO_RE.match(market_id))
+
+
 def apply_filters(
     raw_markets: list[dict[str, Any]],
     platform: str,
@@ -269,6 +282,10 @@ def apply_filters(
             category = _kalshi_category(event_ticker)
             market_id = market.get("ticker", "")
             clob_token_ids = []
+
+            # Skip intraday crypto price-range markets — LLMs have no edge
+            if is_intraday_crypto_range(market_id):
+                continue
 
         # Volume filter
         if volume < min_volume:
