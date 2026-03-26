@@ -6,9 +6,14 @@ Updates via Server-Sent Events (SSE) — no page reloads, data pushed
 within 1-2 seconds of any file change.
 
 Endpoints:
-  GET /           HTML dashboard (initial render, works without JS)
-  GET /events     SSE stream (push JSON updates to connected browsers)
-  GET /api/state  JSON snapshot of current dashboard data
+  GET /               HTML dashboard (sidebar + 5 views)
+  GET /events         SSE stream (push JSON updates to connected browsers)
+  GET /api/state      JSON snapshot of current dashboard data
+  GET /api/runs       List of run manifests (newest-first)
+  GET /api/runs/<id>  Single run manifest
+  GET /api/candidates Latest candidates_{scan_id}.json
+  GET /api/enriched   Latest enriched_{scan_id}.json
+  GET /api/signals    Latest signals_{scan_id}.json
 
 Port 8002 (8000 = Serena MCP, 8001 = Prometheus metrics)
 """
@@ -34,6 +39,7 @@ COST_LOG_PATH = DATA_DIR / "ai_cost_log.jsonl"
 PIPELINE_STATE_PATH = DATA_DIR / "pipeline_state.json"
 
 PORT = 8002
+BANKROLL_USD = float(os.environ.get("BANKROLL_USD", 100))
 
 _WATCHED_FILES = [TRADE_LOG_PATH, METRICS_PATH, PIPELINE_STATE_PATH, COST_LOG_PATH]
 
@@ -74,11 +80,10 @@ _stop_event = threading.Event()
 
 
 # ---------------------------------------------------------------------------
-# File watcher background thread
+# File watcher
 # ---------------------------------------------------------------------------
 
 def _runs_dir_mtime() -> float:
-    """Return the newest mtime among run manifest files, or 0 if none exist."""
     if not RUNS_DIR.exists():
         return 0.0
     newest = 0.0
@@ -124,7 +129,6 @@ def _file_watcher() -> None:
                 pass
             heartbeat_tick = 0
 
-        # Check for run manifest changes → emit run_update event
         new_runs_mtime = _runs_dir_mtime()
         if new_runs_mtime != runs_mtime:
             runs_mtime = new_runs_mtime
@@ -185,15 +189,14 @@ def _read_trades() -> list[dict]:
 
 
 def _read_runs(max_runs: int = 50) -> list[dict]:
-    """Read run manifests from data/runs/, sorted newest-first."""
     if not RUNS_DIR.exists():
         return []
-    manifests = []
     candidates = sorted(
         RUNS_DIR.glob("run_*.json"),
         key=lambda p: p.stat().st_mtime if p.exists() else 0,
         reverse=True,
     )[:max_runs]
+    manifests = []
     for f in candidates:
         try:
             manifests.append(json.loads(f.read_text()))
@@ -203,8 +206,6 @@ def _read_runs(max_runs: int = 50) -> list[dict]:
 
 
 def _read_run_manifest(run_id: str) -> dict | None:
-    """Read a specific run manifest. Returns None if not found/invalid."""
-    # Sanitize: reject traversal attempts
     if not run_id or "/" in run_id or ".." in run_id:
         return None
     manifest_path = RUNS_DIR / f"run_{run_id}.json"
@@ -236,12 +237,72 @@ def _read_daily_ai_cost() -> float:
     return total
 
 
+def _read_latest_ephemeral(prefix: str) -> dict:
+    """Read the most recent data/{prefix}_*.json file."""
+    files = sorted(
+        DATA_DIR.glob(f"{prefix}_*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not files:
+        return {}
+    try:
+        with open(files[0]) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Computed helpers for Post Mortem
+# ---------------------------------------------------------------------------
+
+def _compute_equity_curve(resolved_trades: list[dict]) -> list[dict]:
+    valid = sorted(
+        [t for t in resolved_trades if t.get("resolved_at") and t.get("pnl") is not None],
+        key=lambda t: t["resolved_at"],
+    )
+    equity = BANKROLL_USD
+    result = []
+    for t in valid:
+        equity += float(t["pnl"])
+        result.append({"date": t["resolved_at"][:10], "equity": round(equity, 2)})
+    return result
+
+
+def _compute_category_stats(resolved_trades: list[dict]) -> list[dict]:
+    cat_map: dict[str, str] = {}
+    for prefix in ("signals", "enriched", "candidates"):
+        data = _read_latest_ephemeral(prefix)
+        items = data.get("signals") or data.get("candidates") or []
+        for item in items:
+            mid = item.get("market_id", "")
+            cat = item.get("category")
+            if mid and cat:
+                cat_map[mid] = cat
+
+    stats: dict[str, dict] = {}
+    for t in resolved_trades:
+        if t.get("outcome") is None:
+            continue
+        cat = cat_map.get(t.get("market_id", ""), "Other")
+        if cat not in stats:
+            stats[cat] = {"wins": 0, "total": 0}
+        stats[cat]["total"] += 1
+        if t.get("outcome") == "win":
+            stats[cat]["wins"] += 1
+
+    return [
+        {"category": cat, "wins": v["wins"], "total": v["total"]}
+        for cat, v in sorted(stats.items(), key=lambda x: x[1]["total"], reverse=True)
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Metrics computation
 # ---------------------------------------------------------------------------
 
 def _compute_live_metrics(resolved_trades: list[dict]) -> dict:
-    """Compute win_rate, max_drawdown, profit_factor, total_pnl from resolved trades."""
     if not resolved_trades:
         return {"trade_count": 0, "win_rate": None, "max_drawdown": None,
                 "profit_factor": None, "total_pnl": 0.0}
@@ -255,13 +316,11 @@ def _compute_live_metrics(resolved_trades: list[dict]) -> dict:
     profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else None
     total_pnl = sum(float(t.get("pnl", 0)) for t in resolved_trades)
 
-    # Rolling peak-to-trough drawdown relative to bankroll
-    bankroll = float(os.environ.get("BANKROLL_USD", 100))
     sorted_trades = sorted(
         [t for t in resolved_trades if t.get("resolved_at")],
         key=lambda t: t["resolved_at"],
     )
-    portfolio, peak, max_dd = bankroll, bankroll, 0.0
+    portfolio, peak, max_dd = BANKROLL_USD, BANKROLL_USD, 0.0
     for t in sorted_trades:
         portfolio += float(t.get("pnl", 0))
         if portfolio > peak:
@@ -288,11 +347,10 @@ def _daily_pnl_for(trades: list[dict]) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Dashboard data builder — shared by SSE push and /api/state
+# Dashboard data builder
 # ---------------------------------------------------------------------------
 
 def _build_dashboard_data() -> dict:
-    """Return all dashboard state as a JSON-serializable dict."""
     metrics = _read_metrics()
     trades = _read_trades()
     ai_cost = _read_daily_ai_cost()
@@ -318,6 +376,8 @@ def _build_dashboard_data() -> dict:
     if computed_at:
         computed_at = computed_at[:16].replace("T", " ") + " UTC"
 
+    all_resolved = [t for t in trades if t.get("outcome") is not None and t.get("pnl") is not None]
+
     return {
         "updated_at": now,
         "metrics_snapshot_at": computed_at or "never",
@@ -326,258 +386,20 @@ def _build_dashboard_data() -> dict:
         "pipeline_state": pipeline_state,
         "paper": _mode_data(paper_trades),
         "live": _mode_data(live_trades),
+        "equity_curve": _compute_equity_curve(all_resolved),
+        "category_stats": _compute_category_stats(all_resolved),
     }
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# HTML rendering (template in dashboard_html.py)
 # ---------------------------------------------------------------------------
 
-def _fmt(value, fmt=".3f", fallback="—"):
-    if value is None:
-        return fallback
-    try:
-        return format(float(value), fmt)
-    except (TypeError, ValueError):
-        return fallback
+from dashboard_html import render_dashboard as _render_html  # noqa: E402
 
-
-def _pnl_class(value):
-    if value is None:
-        return ""
-    return "pos" if float(value) >= 0 else "neg"
-
-
-# ---------------------------------------------------------------------------
-# HTML rendering
-# ---------------------------------------------------------------------------
-
-def _render_stat_cards(m: dict, mode: str, open_count: int,
-                       daily_pnl: float, ai_cost: float, brier: float | None) -> str:
-    def card(label, stat_key, value, extra_cls=""):
-        return (
-            f'<div class="card {extra_cls}">'
-            f'<div class="label">{label}</div>'
-            f'<div class="value" id="{mode}-{stat_key}">{value}</div>'
-            f'</div>'
-        )
-
-    win_rate = m.get("win_rate")
-    drawdown = m.get("max_drawdown")
-    profit_factor = m.get("profit_factor")
-    trade_count = m.get("trade_count", 0)
-    total_pnl = m.get("total_pnl", 0.0)
-
-    return "".join([
-        card("Win Rate", "win-rate", _fmt(win_rate, ".1%") if win_rate is not None else "—"),
-        card("Max Drawdown", "max-drawdown", _fmt(drawdown, ".1%") if drawdown is not None else "—"),
-        card("Profit Factor", "profit-factor", _fmt(profit_factor) if profit_factor is not None else "—"),
-        card("Brier Score", "brier", _fmt(brier) if brier is not None else "—"),
-        card("Resolved Trades", "trade-count", str(trade_count)),
-        card("Open Positions", "open-count", str(open_count)),
-        card("Total P&L", "total-pnl", f"${total_pnl:+.2f}", extra_cls=_pnl_class(total_pnl)),
-        card("Daily P&L", "daily-pnl", f"${daily_pnl:+.2f}", extra_cls=_pnl_class(daily_pnl)),
-        card("AI Cost Today", "ai-cost", f"${ai_cost:.4f}"),
-    ])
-
-
-def _render_open_rows(trades: list[dict]) -> str:
-    if not trades:
-        return "<tr><td colspan='9' class='empty'>No open positions</td></tr>"
-    rows = []
-    for t in trades:
-        placed = (t.get("placed_at") or "")[:16].replace("T", " ")
-        raw_edge = t.get("edge", 0) or 0
-        display_edge = raw_edge if t.get("direction", "yes").lower() in ("yes", "long") else -raw_edge
-        market_id = t.get("market_id", "")
-        title = t.get("title") or market_id
-        display_title = title[:60] + ("…" if len(title) > 60 else "")
-        rows.append(
-            f"<tr>"
-            f"<td title='{market_id}'>{display_title}</td>"
-            f"<td>{t.get('platform','')}</td>"
-            f"<td>{t.get('direction','').upper()}</td>"
-            f"<td>${float(t.get('size_usd',0)):.2f}</td>"
-            f"<td class='col-hide'>{_fmt(t.get('entry_price'),'.3f')}</td>"
-            f"<td class='col-hide'>{_fmt(t.get('p_model'),'.3f')}</td>"
-            f"<td>{display_edge:+.1%}</td>"
-            f"<td><span class='badge {t.get('status','')}'>{t.get('status','')}</span></td>"
-            f"<td>{placed}</td>"
-            f"</tr>"
-        )
-    return "".join(rows)
-
-
-def _render_resolved_rows(trades: list[dict]) -> str:
-    recent = sorted(
-        [t for t in trades if t.get("outcome") is not None],
-        key=lambda t: t.get("resolved_at", ""),
-        reverse=True,
-    )[:20]
-    if not recent:
-        return "<tr><td colspan='7' class='empty'>No resolved trades yet</td></tr>"
-    rows = []
-    for t in recent:
-        resolved = (t.get("resolved_at") or "")[:16].replace("T", " ")
-        pnl = t.get("pnl")
-        pnl_str = f"${float(pnl):+.2f}" if pnl is not None else "—"
-        market_id = t.get("market_id", "")
-        title = t.get("title") or market_id
-        display_title = title[:60] + ("…" if len(title) > 60 else "")
-        rows.append(
-            f"<tr>"
-            f"<td title='{market_id}'>{display_title}</td>"
-            f"<td class='col-hide'>{t.get('platform','')}</td>"
-            f"<td class='col-hide'>{t.get('direction','').upper()}</td>"
-            f"<td>${float(t.get('size_usd',0)):.2f}</td>"
-            f"<td>{t.get('outcome','')}</td>"
-            f"<td class='{_pnl_class(pnl)}'>{pnl_str}</td>"
-            f"<td>{resolved}</td>"
-            f"</tr>"
-        )
-    return "".join(rows)
-
-
-def _render_view(view_id: str, mode: str, mode_data: dict,
-                 ai_cost: float, brier: float | None) -> str:
-    m = mode_data["metrics"]
-    open_trades = mode_data["open_trades"]
-    resolved_trades = mode_data["resolved_trades"]
-    daily_pnl = mode_data["daily_pnl"]
-    open_count = mode_data["open_count"]
-
-    cards = _render_stat_cards(m, mode, open_count, daily_pnl, ai_cost, brier)
-    open_rows = _render_open_rows(open_trades)
-    resolved_rows = _render_resolved_rows(resolved_trades)
-
-    return f"""
-<div id="{view_id}" style="display:none">
-  <div class="cards">{cards}</div>
-  <section>
-    <h2>Open Positions (<span id="{mode}-open-heading">{open_count}</span>)</h2>
-    <div class="table-wrap"><table>
-      <thead><tr>
-        <th>Title</th><th>Platform</th><th>Dir</th><th>Size</th>
-        <th class="col-hide">Entry</th><th class="col-hide">p_model</th><th>Edge</th><th>Status</th><th>Placed</th>
-      </tr></thead>
-      <tbody id="{mode}-open-tbody">{open_rows}</tbody>
-    </table></div>
-  </section>
-  <section>
-    <h2>Recent Resolved Trades</h2>
-    <div class="table-wrap"><table>
-      <thead><tr>
-        <th>Title</th><th class="col-hide">Platform</th><th class="col-hide">Dir</th><th>Size</th>
-        <th>Outcome</th><th>P&amp;L</th><th>Resolved</th>
-      </tr></thead>
-      <tbody id="{mode}-resolved-tbody">{resolved_rows}</tbody>
-    </table></div>
-  </section>
-</div>"""
-
-
-# ---------------------------------------------------------------------------
-# CSS and JS (kept in dashboard_assets.py to stay under 800-line limit)
-# ---------------------------------------------------------------------------
-
-from dashboard_assets import _CSS, _JS  # noqa: E402
-
-
-# ---------------------------------------------------------------------------
-# Main render
-# ---------------------------------------------------------------------------
 
 def _render_dashboard() -> str:
-    data = _build_dashboard_data()
-    now = data["updated_at"]
-    brier = data["brier_score"]
-    ai_cost = data["ai_cost_today"]
-    computed_at = data["metrics_snapshot_at"]
-
-    paper_view = _render_view("view-paper", "paper", data["paper"], ai_cost, brier)
-    live_view = _render_view("view-live", "live", data["live"], ai_cost, brier)
-
-    paper_open = data["paper"]["open_count"]
-    live_open = data["live"]["open_count"]
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>predict-market-bot dashboard</title>
-<style>{_CSS}</style>
-</head>
-<body>
-<div class="header">
-  <div>
-    <h1>predict-market-bot</h1>
-    <p class="subtitle">Last metrics snapshot: {computed_at}</p>
-  </div>
-  <div class="header-right">
-    <span id="conn-status" class="conn-reconnecting">◌ Connecting…</span>
-    <span id="last-updated" class="timestamp">Updated {now}</span>
-  </div>
-</div>
-
-<div class="tab-bar">
-  <button class="tab" id="tab-paper" onclick="switchTab('paper')">
-    Paper <span class="count" id="count-paper">{paper_open}</span>
-  </button>
-  <button class="tab" id="tab-live" onclick="switchTab('live')">
-    Live <span class="count" id="count-live">{live_open}</span>
-  </button>
-  <button class="tab" id="tab-pipeline" onclick="switchTab('pipeline')">Pipeline</button>
-</div>
-
-{paper_view}
-{live_view}
-
-<div id="view-pipeline" style="display:none">
-  <div class="pipeline-layout">
-    <div class="pipeline-sidebar">
-      <div class="pipeline-sidebar-section">
-        <div class="pipeline-sidebar-label">Live Run</div>
-        <div id="pipeline-stages">
-          <div class="stage-step" data-stage="scan" onclick="selectStage('scan')">
-            <span class="stage-icon pending" id="stage-icon-scan"></span>
-            <span class="stage-name">Scan</span>
-            <span class="stage-dur" id="stage-dur-scan"></span>
-          </div>
-          <div class="stage-step" data-stage="research" onclick="selectStage('research')">
-            <span class="stage-icon pending" id="stage-icon-research"></span>
-            <span class="stage-name">Research</span>
-            <span class="stage-dur" id="stage-dur-research"></span>
-          </div>
-          <div class="stage-step" data-stage="predict" onclick="selectStage('predict')">
-            <span class="stage-icon pending" id="stage-icon-predict"></span>
-            <span class="stage-name">Predict</span>
-            <span class="stage-dur" id="stage-dur-predict"></span>
-          </div>
-          <div class="stage-step" data-stage="risk" onclick="selectStage('risk')">
-            <span class="stage-icon pending" id="stage-icon-risk"></span>
-            <span class="stage-name">Risk</span>
-            <span class="stage-dur" id="stage-dur-risk"></span>
-          </div>
-        </div>
-      </div>
-      <div class="pipeline-sidebar-section">
-        <div class="pipeline-sidebar-label">History (7 days)</div>
-        <div id="pipeline-run-list" class="run-list-scroll">
-          <div class="pipeline-empty" style="padding:16px 0">Loading…</div>
-        </div>
-      </div>
-    </div>
-    <div class="pipeline-main">
-      <div id="pipeline-no-data" class="pipeline-empty">No pipeline runs yet</div>
-      <div id="pipeline-stage-detail" style="display:none"></div>
-    </div>
-  </div>
-</div>
-
-<script>{_JS}</script>
-</body>
-</html>"""
+    return _render_html(_build_dashboard_data())
 
 
 # ---------------------------------------------------------------------------
@@ -591,12 +413,23 @@ class _Handler(BaseHTTPRequestHandler):
         elif self.path == "/events":
             self._serve_sse()
         elif self.path == "/api/state":
-            self._serve_api_state()
+            self._serve_json(_build_dashboard_data())
         elif self.path == "/api/runs":
-            self._serve_api_runs()
+            self._serve_json(_read_runs())
         elif self.path.startswith("/api/runs/"):
             run_id = self.path[len("/api/runs/"):]
-            self._serve_api_run(run_id)
+            manifest = _read_run_manifest(run_id)
+            if manifest is None:
+                self.send_response(404)
+                self.end_headers()
+            else:
+                self._serve_json(manifest)
+        elif self.path == "/api/candidates":
+            self._serve_json(_read_latest_ephemeral("candidates"))
+        elif self.path == "/api/enriched":
+            self._serve_json(_read_latest_ephemeral("enriched"))
+        elif self.path == "/api/signals":
+            self._serve_json(_read_latest_ephemeral("signals"))
         else:
             self.send_response(404)
             self.end_headers()
@@ -609,29 +442,8 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _serve_api_state(self):
-        body = json.dumps(_build_dashboard_data(), indent=2).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _serve_api_runs(self):
-        body = json.dumps(_read_runs(), indent=2).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def _serve_api_run(self, run_id: str):
-        manifest = _read_run_manifest(run_id)
-        if manifest is None:
-            self.send_response(404)
-            self.end_headers()
-            return
-        body = json.dumps(manifest, indent=2).encode()
+    def _serve_json(self, data: dict | list):
+        body = json.dumps(data, indent=2).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -649,7 +461,6 @@ class _Handler(BaseHTTPRequestHandler):
         client_queue: queue.Queue = queue.Queue(maxsize=10)
         _sse_clients.add(client_queue)
 
-        # Send initial state immediately
         try:
             data = _build_dashboard_data()
             self.wfile.write(f"data: {json.dumps(data)}\n\n".encode())
@@ -662,10 +473,7 @@ class _Handler(BaseHTTPRequestHandler):
             while not _stop_event.is_set():
                 try:
                     payload = client_queue.get(timeout=1.0)
-                    if payload.startswith(":"):
-                        self.wfile.write(payload.encode())
-                    else:
-                        self.wfile.write(payload.encode())
+                    self.wfile.write(payload.encode())
                     self.wfile.flush()
                 except queue.Empty:
                     continue
