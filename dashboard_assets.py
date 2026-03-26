@@ -285,7 +285,7 @@ _JS = """
       var trades = r.trades_placed || 0;
       var sel = _selectedRunId === r.run_id ? ' selected' : '';
       var safeId = escHtml(r.run_id || '');
-      return '<div class="run-item' + sel + '" id="run-item-' + safeId + '" onclick="selectRun(\'' + safeId + '\')">' +
+      return '<div class="run-item' + sel + '" id="run-item-' + safeId + '" onclick="selectRun(\\'' + safeId + '\\')">' +
         '<div class="run-meta">' +
           '<span class="run-status-dot ' + escHtml(r.status||'pending') + '"></span>' +
           '<span class="run-time">' + escHtml(t) + '</span>' +
