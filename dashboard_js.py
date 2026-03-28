@@ -15,6 +15,10 @@ var _currentView = 'scan';
 var _currentMode = 'paper';
 var _lastState   = null;
 var _selectedRunId = null;
+var _researchCandidates = [];
+var _selectedResearchIdx = -1;
+var _predictSignals = [];
+var _selectedPredictIdx = -1;
 
 /* =========================================================
    Utilities
@@ -169,6 +173,8 @@ function renderScanTable(candidates) {
 function loadResearchData() {
   fetch('/api/enriched').then(function(r) { return r.json(); }).then(function(data) {
     var candidates = data.candidates || [];
+    _researchCandidates = candidates;
+    _selectedResearchIdx = candidates.length ? 0 : -1;
     renderResearchCards(candidates);
     renderResearchTable(candidates);
     if (candidates.length) renderResearchDetail(candidates[0]);
@@ -194,7 +200,7 @@ function renderResearchTable(candidates) {
   if (!tbody) return;
   if (!candidates.length) { tbody.innerHTML = emptyRow(5, 'No research data yet'); return; }
 
-  tbody.innerHTML = candidates.map(function(c) {
+  tbody.innerHTML = candidates.map(function(c, i) {
     var sent = c.sentiment || {};
     var score = sent.score != null ? parseFloat(sent.score) : null;
     var conf  = sent.confidence != null ? parseFloat(sent.confidence) : null;
@@ -208,7 +214,8 @@ function renderResearchTable(candidates) {
           ? '<span class="bdg bdg-lowconf">Low Conf</span>'
           : '<span class="bdg bdg-optimal">OK</span>');
     var mid = (c.market_id || '').slice(-14);
-    return '<tr>' +
+    var rowStyle = i === _selectedResearchIdx ? ' style="background:#1a2035;cursor:pointer"' : ' style="cursor:pointer"';
+    return '<tr onclick="selectResearchMarket(' + i + ')"' + rowStyle + '>' +
       '<td class="td-mono" title="' + escHtml(c.market_id) + '">' + escHtml(mid) + '</td>' +
       '<td><span class="sentiment-dot" style="background:' + dotColor + '"></span>' +
            '<span style="font-size:0.75rem;color:#e2e8f0">' + escHtml(sent.label || '\u2014') + '</span></td>' +
@@ -262,6 +269,17 @@ function renderResearchDetail(candidate) {
   if (titleEl) titleEl.textContent = candidate.title || candidate.market_id || '';
 }
 
+function selectResearchMarket(idx) {
+  _selectedResearchIdx = idx;
+  var candidate = _researchCandidates[idx];
+  if (candidate) renderResearchDetail(candidate);
+  var rows = document.querySelectorAll('#research-tbody tr');
+  rows.forEach(function(row, i) {
+    row.style.background = i === idx ? '#1a2035' : '';
+  });
+}
+window.selectResearchMarket = selectResearchMarket;
+
 function _buildDonutSvg(fraction, label) {
   var r = 44, cx = 60, cy = 60, stroke = 8;
   var circ = 2 * Math.PI * r;
@@ -293,6 +311,8 @@ function loadPredictData() {
     var signals = data.signals || [];
     renderPredictCards(signals, data.brier_status);
     var actives = signals.filter(function(s) { return !s.predict_skipped; });
+    _predictSignals = actives;
+    _selectedPredictIdx = actives.length ? 0 : -1;
     renderEnsemble(actives[0] || signals[0]);
     renderSignaledTable(actives);
   }).catch(function() {
@@ -353,7 +373,7 @@ function renderSignaledTable(signals) {
   if (!tbody) return;
   if (!signals.length) { tbody.innerHTML = emptyRow(7, 'No signals — adjust min_edge_to_signal or run pipeline'); return; }
 
-  tbody.innerHTML = signals.map(function(s) {
+  tbody.innerHTML = signals.map(function(s, i) {
     var edge = s.edge != null ? parseFloat(s.edge) : null;
     var edgeCls = edge != null ? (edge > 0 ? 'td-green' : 'td-red') : '';
     var edgeTxt = edge != null ? (edge > 0 ? '+' : '') + (edge*100).toFixed(1)+'%' : '\u2014';
@@ -365,7 +385,8 @@ function renderSignaledTable(signals) {
       : '<span style="color:#374151">\u2014</span>';
     var models = (s.llm_consensus || {}).models_responded || 0;
     var mid = (s.market_id || '').slice(-14);
-    return '<tr>' +
+    var rowStyle = i === _selectedPredictIdx ? ' style="background:#1a2035;cursor:pointer"' : ' style="cursor:pointer"';
+    return '<tr onclick="selectPredictMarket(' + i + ')"' + rowStyle + '>' +
       '<td class="td-mono" title="' + escHtml(s.market_id) + '">' + escHtml(mid) + '</td>' +
       '<td class="td-teal">' + fmtPct(s.p_model) + '</td>' +
       '<td class="' + edgeCls + '">' + edgeTxt + '</td>' +
@@ -376,6 +397,17 @@ function renderSignaledTable(signals) {
     '</tr>';
   }).join('');
 }
+
+function selectPredictMarket(idx) {
+  _selectedPredictIdx = idx;
+  var signal = _predictSignals[idx];
+  if (signal) renderEnsemble(signal);
+  var rows = document.querySelectorAll('#predict-tbody tr');
+  rows.forEach(function(row, i) {
+    row.style.background = i === idx ? '#1a2035' : '';
+  });
+}
+window.selectPredictMarket = selectPredictMarket;
 
 /* =========================================================
    Risk view (driven by SSE state)
@@ -389,9 +421,9 @@ function updateRiskView() {
   var open = md.open_trades || [];
   var resolved = md.resolved_trades || [];
 
-  // Stat cards
-  var approved = resolved.filter(function(t) { return t.outcome === 'win'; }).length;
-  var blocked  = 0; // not tracked separately in trade log — show open positions count instead
+  // Stat cards — use server-computed counts from full trade set (not truncated array)
+  var approved = md.win_count != null ? md.win_count : resolved.filter(function(t) { return t.outcome === 'win'; }).length;
+  var blocked  = md.loss_count != null ? md.loss_count : 0;
   _setStatNumber('risk-stat-approved', approved, 'green');
   _setStatNumber('risk-stat-blocked', blocked, 'red');
   _setStatNumber('risk-stat-open', md.open_count || 0, 'teal');
@@ -606,10 +638,40 @@ function renderRunList(runs) {
 
 function selectRun(runId) {
   _selectedRunId = runId;
-  // Re-render to update selected state
   fetch('/api/runs').then(function(r) { return r.json(); }).then(renderRunList).catch(function() {});
+  fetch('/api/runs/' + encodeURIComponent(runId)).then(function(r) { return r.json(); }).then(function(run) {
+    updateSidebarStageStatus(run);
+    renderRunDetail(run);
+  }).catch(function() {});
 }
 window.selectRun = selectRun;
+
+function renderRunDetail(run) {
+  var el = document.getElementById('run-detail-panel');
+  if (!el) return;
+  var stages = run.stages || {};
+  var stageNames = ['scan', 'research', 'predict', 'risk'];
+  var stageHtml = stageNames.map(function(s) {
+    var st = stages[s];
+    if (!st) return '';
+    var color = st.status === 'completed' ? '#22c55e' : st.status === 'failed' ? '#ef4444' : '#f59e0b';
+    var dur = st.duration_s != null ? st.duration_s.toFixed(1) + 's' : '';
+    var count = st.count != null ? ' &bull; ' + st.count : '';
+    return '<div style="display:flex;justify-content:space-between;font-size:0.68rem;padding:2px 0;border-bottom:1px solid #1e2535">' +
+      '<span style="color:' + color + ';text-transform:uppercase;letter-spacing:0.05em">' + s + '</span>' +
+      '<span style="color:#64748b">' + dur + count + '</span>' +
+    '</div>';
+  }).filter(Boolean).join('');
+
+  var ts = run.started_at ? new Date(run.started_at).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : '';
+  var trades = run.trades_placed != null ? run.trades_placed + ' trade' + (run.trades_placed !== 1 ? 's' : '') : '';
+
+  el.innerHTML =
+    '<div style="font-size:0.65rem;color:#94a3b8;margin-bottom:6px;font-family:\'Geist Mono\',monospace">' + escHtml(ts) + (trades ? ' &bull; ' + escHtml(trades) : '') + '</div>' +
+    stageHtml;
+  el.style.display = 'block';
+}
+window.renderRunDetail = renderRunDetail;
 
 /* =========================================================
    Sidebar stage status indicators

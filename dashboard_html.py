@@ -67,6 +67,7 @@ def render_dashboard(data: dict) -> str:
   <div class="run-list-scroll" id="pipeline-run-list">
     <div style="padding:8px 16px;font-size:0.7rem;color:#64748b">Loading&hellip;</div>
   </div>
+  <div id="run-detail-panel" style="display:none;padding:8px 16px;border-top:1px solid #1e2535"></div>
 
   <div class="sidebar-footer">
     <span id="conn-status" class="conn-reconnecting">&#9700; Connecting&hellip;</span>

@@ -363,13 +363,18 @@ def _build_dashboard_data() -> dict:
     def _mode_data(mode_trades: list[dict]) -> dict:
         open_trades = [t for t in mode_trades if t.get("outcome") is None]
         resolved = [t for t in mode_trades if t.get("outcome") is not None and t.get("pnl") is not None]
-        recent_resolved = sorted(resolved, key=lambda t: t.get("resolved_at", ""), reverse=True)[:20]
+        win_count = sum(1 for t in resolved if t.get("outcome") == "win")
+        loss_count = sum(1 for t in resolved if t.get("outcome") == "loss")
+        recent_resolved = sorted(resolved, key=lambda t: t.get("resolved_at", ""), reverse=True)[:200]
         return {
             "metrics": _compute_live_metrics(resolved),
             "open_trades": open_trades,
             "resolved_trades": recent_resolved,
             "daily_pnl": round(_daily_pnl_for(mode_trades), 4),
             "open_count": len(open_trades),
+            "resolved_count": len(resolved),
+            "win_count": win_count,
+            "loss_count": loss_count,
         }
 
     computed_at = metrics.get("computed_at", "")
