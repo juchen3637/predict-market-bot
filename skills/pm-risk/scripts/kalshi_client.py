@@ -28,6 +28,8 @@ KALSHI_BASE_URL = os.environ.get(
 KALSHI_DEMO_URL = os.environ.get(
     "KALSHI_DEMO_URL", "https://demo-api.kalshi.co/trade-api/v2"
 )
+KALSHI_DEMO_API_KEY = os.environ.get("KALSHI_DEMO_API_KEY", "")
+KALSHI_DEMO_API_SECRET = os.environ.get("KALSHI_DEMO_API_SECRET", "")
 
 _DECLINED = {
     "order_id": None,
@@ -70,12 +72,32 @@ def _kalshi_headers(method: str, path: str) -> dict[str, str]:
 
 
 def _get_headers(method: str, path: str) -> dict[str, str] | None:
-    """Return signed headers, or None if credentials are missing."""
+    """Return signed production headers, or None if credentials are missing."""
     api_key = os.environ.get("KALSHI_API_KEY", "")
     api_secret = os.environ.get("KALSHI_API_SECRET", "")
     if not api_key or not api_secret:
         return None
     return _kalshi_headers(method, path)
+
+
+def _get_demo_headers(method: str, path: str) -> dict[str, str] | None:
+    """Return signed demo headers using KALSHI_DEMO_API_KEY/SECRET, or None if missing."""
+    api_key = KALSHI_DEMO_API_KEY
+    api_secret = KALSHI_DEMO_API_SECRET
+    if not api_key or not api_secret:
+        return None
+    ts = str(int(time.time() * 1000))
+    msg = (ts + method.upper() + path).encode()
+    pem = api_secret.replace("\\n", "\n").encode()
+    private_key = serialization.load_pem_private_key(pem, password=None)
+    signature = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
+    sig_b64 = base64.b64encode(signature).decode()
+    return {
+        "KALSHI-ACCESS-KEY": api_key,
+        "KALSHI-ACCESS-TIMESTAMP": ts,
+        "KALSHI-ACCESS-SIGNATURE": sig_b64,
+        "Content-Type": "application/json",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +128,7 @@ def place_order(
         {"order_id": str | None, "fill_price": float | None, "status": str}
         status is one of: "filled", "open", "declined"
     """
-    headers = _get_headers("POST", _ORDERS_PATH)
+    headers = _get_demo_headers("POST", _ORDERS_PATH) if use_demo else _get_headers("POST", _ORDERS_PATH)
     if headers is None:
         return dict(_DECLINED)
 
@@ -212,7 +234,7 @@ def get_depth(
     Returns True if total >= requested contracts.
     """
     ob_path = _ORDERBOOK_PATH_TPL.format(ticker=market_ticker)
-    headers = _get_headers("GET", ob_path)
+    headers = _get_demo_headers("GET", ob_path) if use_demo else _get_headers("GET", ob_path)
     if headers is None:
         return True  # credential-missing fallback: pass through
 
