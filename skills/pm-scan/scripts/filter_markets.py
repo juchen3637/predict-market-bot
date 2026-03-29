@@ -159,15 +159,11 @@ def fetch_kalshi_markets(
     Reference: https://trading-api.readme.io
     Reference repo: github.com/suislanchez/polymarket-kalshi-weather-bot
     """
-    use_demo = os.environ.get("KALSHI_USE_DEMO", "true").lower() != "false"
-    if use_demo:
-        base_url = os.environ.get(
-            "KALSHI_DEMO_URL", "https://demo-api.kalshi.co/trade-api/v2"
-        )
-    else:
-        base_url = os.environ.get(
-            "KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2"
-        )
+    # Scanning always uses production — demo has far fewer markets.
+    # KALSHI_USE_DEMO only controls order execution (kalshi_client.py).
+    base_url = os.environ.get(
+        "KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2"
+    )
 
     # Fetch from targeted high-volume series instead of paginating all markets.
     # Full pagination returns 40k+ mostly-zero-volume markets; series filtering
