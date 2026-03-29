@@ -166,6 +166,7 @@ def execute(
     Final kill switch check happens here.
     """
     paper_mode = os.environ.get("PAPER_TRADING", "true").lower() == "true"
+    polymarket_paper = os.environ.get("POLYMARKET_PAPER", "true").lower() == "true"
     now = datetime.now(timezone.utc).isoformat()
 
     market_id = signal["market_id"]
@@ -212,8 +213,11 @@ def execute(
         append_trade_log(record)
         return record
 
+    # Resolve effective paper mode for this platform
+    effective_paper = paper_mode or (platform == "polymarket" and polymarket_paper)
+
     # Pre-trade orderbook depth check (skipped in paper mode — no real book to query)
-    if not paper_mode and not has_adequate_depth(platform, market_id, direction, entry_price, contracts):
+    if not effective_paper and not has_adequate_depth(platform, market_id, direction, entry_price, contracts):
         print(
             f"[pm-risk] Insufficient orderbook depth for {market_id} ({platform}). Aborting.",
             file=sys.stderr,
@@ -224,7 +228,7 @@ def execute(
 
     # Execute or simulate
     try:
-        if paper_mode:
+        if effective_paper:
             result = simulate_paper_order(market_id, direction, contracts, entry_price, platform)
             status = "paper"
         elif platform == "kalshi":
@@ -243,7 +247,7 @@ def execute(
         order_id = result.get("order_id")
 
         # If order is resting (not immediately filled), poll until filled or timed out
-        if result_status == "open" and order_id and not paper_mode:
+        if result_status == "open" and order_id and not effective_paper:
             import yaml  # noqa: PLC0415
             from order_poller import poll_until_filled  # noqa: PLC0415
             try:
