@@ -348,6 +348,21 @@ def render_dashboard(data: dict) -> str:
         <div class="stat-number white" id="pm-stat-daily-pnl">&mdash;</div>
         <div class="stat-sub">Resolved today</div>
       </div>
+      <div class="stat-card">
+        <div class="stat-label">XGBoost</div>
+        <div class="stat-number white" id="pm-stat-xgb-status">&mdash;</div>
+        <div class="stat-sub">Model status</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">XGB Last Trained</div>
+        <div class="stat-number white" id="pm-stat-xgb-trained">&mdash;</div>
+        <div class="stat-sub">UTC</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">XGB Records</div>
+        <div class="stat-number white" id="pm-stat-xgb-records">&mdash;</div>
+        <div class="stat-sub">Training set size</div>
+      </div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
       <div class="chart-panel">

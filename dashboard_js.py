@@ -523,6 +523,20 @@ function updatePostMortemView() {
   var pfEl = document.getElementById('pm-stat-pf');
   if (pfEl) { pfEl.textContent = pf != null ? parseFloat(pf).toFixed(2) : '\u2014'; pfEl.className = 'stat-number ' + (pf != null && pf >= 1.5 ? 'green' : 'amber'); }
 
+  var xgb = _lastState.xgboost || {};
+  var xgbStatusEl = document.getElementById('pm-stat-xgb-status');
+  if (xgbStatusEl) { xgbStatusEl.textContent = xgb.model_active ? 'Active' : 'Inactive'; xgbStatusEl.className = 'stat-number ' + (xgb.model_active ? 'green' : 'amber'); }
+
+  var xgbTrainedEl = document.getElementById('pm-stat-xgb-trained');
+  if (xgbTrainedEl) {
+    var ts = xgb.last_trained_at;
+    xgbTrainedEl.textContent = ts ? ts.slice(0, 16).replace('T', ' ') : '\u2014';
+    xgbTrainedEl.className = 'stat-number white';
+  }
+
+  var xgbRecordsEl = document.getElementById('pm-stat-xgb-records');
+  if (xgbRecordsEl) { xgbRecordsEl.textContent = xgb.last_train_trade_count != null ? xgb.last_train_trade_count : '\u2014'; xgbRecordsEl.className = 'stat-number teal'; }
+
   // PnL chart from equity curve
   var curve = _lastState.equity_curve || [];
   renderPnlChart(curve);

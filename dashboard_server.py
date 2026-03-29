@@ -37,6 +37,8 @@ METRICS_PATH = DATA_DIR / "performance_metrics.json"
 TRADE_LOG_PATH = DATA_DIR / "trade_log.jsonl"
 COST_LOG_PATH = DATA_DIR / "ai_cost_log.jsonl"
 PIPELINE_STATE_PATH = DATA_DIR / "pipeline_state.json"
+XGB_STATE_PATH = DATA_DIR / "xgboost_train_state.json"
+XGB_MODEL_PATH = DATA_DIR / "xgboost_model.pkl"
 
 PORT = 8002
 BANKROLL_USD = float(os.environ.get("BANKROLL_USD", 100))
@@ -347,6 +349,22 @@ def _daily_pnl_for(trades: list[dict]) -> float:
 
 
 # ---------------------------------------------------------------------------
+# XGBoost state reader
+# ---------------------------------------------------------------------------
+
+def _read_xgboost_state() -> dict:
+    state: dict = {}
+    if XGB_STATE_PATH.exists():
+        try:
+            with open(XGB_STATE_PATH) as f:
+                state = json.load(f)
+        except Exception:
+            pass
+    state["model_active"] = XGB_MODEL_PATH.exists()
+    return state
+
+
+# ---------------------------------------------------------------------------
 # Dashboard data builder
 # ---------------------------------------------------------------------------
 
@@ -395,6 +413,7 @@ def _build_dashboard_data() -> dict:
         "live": _mode_data(live_trades),
         "equity_curve": _compute_equity_curve(all_resolved),
         "category_stats": _compute_category_stats(all_resolved),
+        "xgboost": _read_xgboost_state(),
     }
 
 
