@@ -81,7 +81,10 @@ def _get_headers(method: str, path: str) -> dict[str, str] | None:
 
 
 def _get_demo_headers(method: str, path: str) -> dict[str, str] | None:
-    """Return signed demo headers using KALSHI_DEMO_API_KEY/SECRET, or None if missing."""
+    """Return signed demo headers using KALSHI_DEMO_API_KEY/SECRET, or None if missing.
+
+    Demo API requires RSA-PSS (SHA256) — different from production PKCS1v15.
+    """
     api_key = KALSHI_DEMO_API_KEY
     api_secret = KALSHI_DEMO_API_SECRET
     if not api_key or not api_secret:
@@ -90,7 +93,11 @@ def _get_demo_headers(method: str, path: str) -> dict[str, str] | None:
     msg = (ts + method.upper() + path).encode()
     pem = api_secret.replace("\\n", "\n").encode()
     private_key = serialization.load_pem_private_key(pem, password=None)
-    signature = private_key.sign(msg, padding.PKCS1v15(), hashes.SHA256())
+    signature = private_key.sign(
+        msg,
+        padding.PSS(mgf=padding.MGF1(hashes.SHA256()), salt_length=padding.PSS.MAX_LENGTH),
+        hashes.SHA256(),
+    )
     sig_b64 = base64.b64encode(signature).decode()
     return {
         "KALSHI-ACCESS-KEY": api_key,
