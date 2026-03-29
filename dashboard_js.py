@@ -499,7 +499,7 @@ function updatePostMortemView() {
   var wrEl = document.getElementById('pm-stat-wr');
   if (wrEl) { wrEl.textContent = wr != null ? fmtPct(wr) : '\u2014'; wrEl.className = 'stat-number ' + (wr != null && wr >= 0.6 ? 'green' : 'amber'); }
 
-  var sharpe = _lastState.sharpe_ratio;
+  var sharpe = _currentMode === 'paper' ? _lastState.sharpe_paper : _lastState.sharpe_live;
   var sharpeEl = document.getElementById('pm-stat-sharpe');
   if (sharpeEl) { sharpeEl.textContent = sharpe != null ? parseFloat(sharpe).toFixed(2) : '\u2014'; sharpeEl.className = 'stat-number ' + (sharpe != null && sharpe >= 2.0 ? 'green' : 'amber'); }
 
