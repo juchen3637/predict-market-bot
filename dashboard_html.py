@@ -337,6 +337,18 @@ def render_dashboard(data: dict) -> str:
         <div class="stat-sub">Target: &gt;1.5</div>
       </div>
     </div>
+    <div class="stat-grid stat-grid-5" style="margin-top:-8px;margin-bottom:24px">
+      <div class="stat-card">
+        <div class="stat-label">Total P&amp;L</div>
+        <div class="stat-number white" id="pm-stat-total-pnl">&mdash;</div>
+        <div class="stat-sub">All resolved trades</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Today P&amp;L</div>
+        <div class="stat-number white" id="pm-stat-daily-pnl">&mdash;</div>
+        <div class="stat-sub">Resolved today</div>
+      </div>
+    </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;margin-bottom:24px">
       <div class="chart-panel">
         <h3 style="margin-bottom:20px">Cumulative P&amp;L</h3>

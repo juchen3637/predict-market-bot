@@ -387,6 +387,7 @@ def _build_dashboard_data() -> dict:
         "updated_at": now,
         "metrics_snapshot_at": computed_at or "never",
         "brier_score": metrics.get("brier_score"),
+        "sharpe_ratio": metrics.get("sharpe_ratio"),
         "ai_cost_today": round(ai_cost, 4),
         "pipeline_state": pipeline_state,
         "paper": _mode_data(paper_trades),

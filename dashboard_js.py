@@ -499,7 +499,18 @@ function updatePostMortemView() {
   var wrEl = document.getElementById('pm-stat-wr');
   if (wrEl) { wrEl.textContent = wr != null ? fmtPct(wr) : '\u2014'; wrEl.className = 'stat-number ' + (wr != null && wr >= 0.6 ? 'green' : 'amber'); }
 
-  _setStatNumber('pm-stat-sharpe', null, 'white');   // not computed live
+  var sharpe = _lastState.sharpe_ratio;
+  var sharpeEl = document.getElementById('pm-stat-sharpe');
+  if (sharpeEl) { sharpeEl.textContent = sharpe != null ? parseFloat(sharpe).toFixed(2) : '\u2014'; sharpeEl.className = 'stat-number ' + (sharpe != null && sharpe >= 2.0 ? 'green' : 'amber'); }
+
+  var totalPnl = m.total_pnl;
+  var totalPnlEl = document.getElementById('pm-stat-total-pnl');
+  if (totalPnlEl) { totalPnlEl.textContent = totalPnl != null ? '$' + parseFloat(totalPnl).toFixed(2) : '\u2014'; totalPnlEl.className = 'stat-number ' + (totalPnl != null && totalPnl >= 0 ? 'green' : 'red'); }
+
+  var dailyPnl = md.daily_pnl;
+  var dailyPnlEl = document.getElementById('pm-stat-daily-pnl');
+  if (dailyPnlEl) { dailyPnlEl.textContent = dailyPnl != null ? '$' + parseFloat(dailyPnl).toFixed(2) : '\u2014'; dailyPnlEl.className = 'stat-number ' + (dailyPnl != null && dailyPnl >= 0 ? 'green' : 'red'); }
+
   var brier = _lastState.brier_score;
   var brierEl = document.getElementById('pm-stat-brier');
   if (brierEl) { brierEl.textContent = brier != null ? parseFloat(brier).toFixed(3) : '\u2014'; brierEl.className = 'stat-number ' + (brier != null && brier < 0.25 ? 'green' : 'amber'); }
