@@ -253,18 +253,25 @@ def get_depth(
             resp = client.get(
                 f"{base_url}/markets/{market_ticker}/orderbook",
                 headers=headers,
+                params={"depth": 10},
             )
         resp.raise_for_status()
 
-        orderbook = resp.json().get("orderbook", {})
-        levels = orderbook.get(direction, [])  # list of [price_cents, size] pairs
+        data = resp.json()
 
-        total = 0
-        for level in (levels or []):
-            price_c, size = level[0], level[1]
-            if price_c >= limit_cents:
-                total += size
+        # New API format: orderbook_fp with decimal prices and dollar amounts
+        ob_fp = data.get("orderbook_fp", {})
+        if ob_fp:
+            key = f"{direction}_dollars"
+            levels = ob_fp.get(key, [])
+            total_dollars = sum(float(lvl[1]) for lvl in (levels or []) if float(lvl[0]) >= limit_price)
+            needed_dollars = contracts * limit_price
+            return total_dollars >= needed_dollars
 
+        # Fallback: legacy orderbook format with integer cents and contract counts
+        orderbook = data.get("orderbook", {})
+        levels = orderbook.get(direction, [])
+        total = sum(lvl[1] for lvl in (levels or []) if lvl[0] >= limit_cents)
         return total >= contracts
 
     except Exception as e:
