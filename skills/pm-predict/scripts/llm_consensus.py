@@ -142,10 +142,9 @@ def call_gemini(prompt: str) -> tuple[float, str] | None:
     if not api_key:
         return None
     try:
-        import google.generativeai as genai  # type: ignore
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.5-flash")
-        resp = model.generate_content(prompt)
+        from google import genai  # type: ignore
+        client = genai.Client(api_key=api_key)
+        resp = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
         usage = resp.usage_metadata
         record_cost(
             "gemini-2.5-flash",
