@@ -116,6 +116,10 @@ def check_take_profit(
     if current_yes is None:
         return False
 
+    # Price at 0 or 1 means market has resolved — let resolver handle it, not take-profit
+    if current_yes <= 0.01 or current_yes >= 0.99:
+        return False
+
     if direction == "yes":
         return current_yes >= fill_price + take_profit_pct
     else:

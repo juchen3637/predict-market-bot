@@ -99,11 +99,13 @@ def _polymarket_resolution(market_id: str) -> dict[str, Any] | None:
 
         resolved = bool(data.get("resolved", False))
         outcome: str | None = None
-        if resolved:
-            if str(raw_prices[0]) == "1":
-                outcome = "yes"
-            elif str(raw_prices[1]) == "1":
-                outcome = "no"
+        # Also treat price at terminal values (0/1) as resolved even if flag not set yet
+        if str(raw_prices[0]) == "1" or str(raw_prices[0]) == "1.0":
+            outcome = "yes"
+            resolved = True
+        elif str(raw_prices[1]) == "1" or str(raw_prices[1]) == "1.0":
+            outcome = "no"
+            resolved = True
 
         return {
             "resolved": resolved,
