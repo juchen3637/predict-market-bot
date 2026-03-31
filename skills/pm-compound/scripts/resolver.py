@@ -66,7 +66,7 @@ def load_unresolved_trades() -> list[dict]:
                 continue
             try:
                 trade = json.loads(line)
-                if trade.get("outcome") is None:
+                if trade.get("outcome") is None and trade.get("status") in ("placed", "paper"):
                     trades.append(trade)
             except json.JSONDecodeError:
                 continue
