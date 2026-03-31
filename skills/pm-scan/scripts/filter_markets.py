@@ -162,7 +162,7 @@ def fetch_kalshi_markets(
     # Scanning always uses production — demo has far fewer markets.
     # KALSHI_USE_DEMO only controls order execution (kalshi_client.py).
     base_url = os.environ.get(
-        "KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2"
+        "KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2"
     )
 
     # Fetch from targeted high-volume series instead of paginating all markets.

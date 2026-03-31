@@ -70,8 +70,9 @@ def _kalshi_depth(
         )
         return True
 
+    use_demo = os.environ.get("KALSHI_USE_DEMO", "true").lower() == "true"
     from kalshi_client import get_depth as _k_depth
-    return _k_depth(market_ticker, direction, limit_price, contracts, use_demo=False)
+    return _k_depth(market_ticker, direction, limit_price, contracts, use_demo)
 
 
 # ---------------------------------------------------------------------------

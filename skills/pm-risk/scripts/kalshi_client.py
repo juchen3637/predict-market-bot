@@ -23,7 +23,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 # ---------------------------------------------------------------------------
 
 KALSHI_BASE_URL = os.environ.get(
-    "KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2"
+    "KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2"
 )
 KALSHI_DEMO_URL = os.environ.get(
     "KALSHI_DEMO_URL", "https://demo-api.kalshi.co/trade-api/v2"

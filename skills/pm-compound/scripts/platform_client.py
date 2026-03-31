@@ -52,13 +52,10 @@ def _kalshi_headers(method: str, path: str) -> dict[str, str]:
 
 
 def _kalshi_base_url() -> str:
-    use_demo = os.environ.get("KALSHI_USE_DEMO", "true").lower() != "false"
-    if use_demo:
-        return os.environ.get(
-            "KALSHI_DEMO_URL", "https://demo-api.kalshi.co/trade-api/v2"
-        )
+    # Resolution and market data always use production — markets settle on
+    # production regardless of whether orders were placed on demo.
     return os.environ.get(
-        "KALSHI_BASE_URL", "https://trading-api.kalshi.com/trade-api/v2"
+        "KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2"
     )
 
 

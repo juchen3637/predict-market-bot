@@ -38,33 +38,35 @@ def _get_current_yes_price(platform: str, market_id: str) -> float | None:
     """Fetch current YES price from platform orderbook. Returns None on error."""
     try:
         if platform == "polymarket":
-            from polymarket_client import _get_client  # noqa: PLC0415
-            client = _get_client()
-            if client is None:
-                return None
-            book = client.get_order_book(market_id)
-            asks = book.asks or []
-            bids = book.bids or []
-            if asks and bids:
-                best_ask = float(min(a.price for a in asks))
-                best_bid = float(max(b.price for b in bids))
-                return (best_ask + best_bid) / 2.0
-            elif asks:
-                return float(min(a.price for a in asks))
-            elif bids:
-                return float(max(b.price for b in bids))
+            import httpx as _httpx  # noqa: PLC0415
+            gamma_base = os.environ.get(
+                "POLYMARKET_GAMMA_URL", "https://gamma-api.polymarket.com"
+            )
+            with _httpx.Client(timeout=10.0) as _client:
+                resp = _client.get(
+                    f"{gamma_base}/markets",
+                    params={"condition_id": market_id},
+                )
+            resp.raise_for_status()
+            results = resp.json()
+            data = results[0] if isinstance(results, list) and results else results
+            raw = data.get("outcomePrices") or ["0.5", "0.5"]
+            if isinstance(raw, str):
+                import json as _json
+                raw = _json.loads(raw)
+            return float(raw[0])
         elif platform == "kalshi":
             import httpx  # noqa: PLC0415
             from kalshi_client import (  # noqa: PLC0415
-                KALSHI_DEMO_URL, _get_headers, _ORDERBOOK_PATH_TPL,
+                _get_headers, _ORDERBOOK_PATH_TPL,
             )
-            import os
-            use_demo = os.environ.get("KALSHI_USE_DEMO", "true").lower() == "true"
             ob_path = _ORDERBOOK_PATH_TPL.format(ticker=market_id)
             headers = _get_headers("GET", ob_path)
             if headers is None:
                 return None
-            base_url = KALSHI_DEMO_URL if use_demo else "https://trading-api.kalshi.com/trade-api/v2"
+            base_url = os.environ.get(
+                "KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2"
+            )
             with httpx.Client(timeout=10.0) as client:
                 resp = client.get(
                     f"{base_url}/markets/{market_id}/orderbook",
