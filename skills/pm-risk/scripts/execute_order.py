@@ -246,29 +246,8 @@ def execute(
         result_status = result.get("status", "filled")
         order_id = result.get("order_id")
 
-        # If order is resting (not immediately filled), poll until filled or timed out
-        if result_status == "open" and order_id and not effective_paper:
-            import yaml  # noqa: PLC0415
-            from order_poller import poll_until_filled  # noqa: PLC0415
-            try:
-                settings_path = Path(__file__).parent.parent.parent.parent / "config" / "settings.yaml"
-                with open(settings_path) as _f:
-                    _settings = yaml.safe_load(_f)
-                timeout = int(_settings.get("execution", {}).get("order_timeout_seconds", 300))
-            except Exception:
-                timeout = 300
-            use_demo = os.environ.get("KALSHI_USE_DEMO", "true").lower() == "true"
-            poll_result = poll_until_filled(
-                order_id=order_id,
-                platform=platform,
-                market_id=market_id,
-                timeout_seconds=timeout,
-                interval_seconds=30,
-                use_demo=use_demo,
-            )
-            result = poll_result
-            fill_price = poll_result.get("fill_price")
-            result_status = poll_result.get("status", "timed_out")
+        # Resting limit orders are accepted as placed — do not block the pipeline polling for fills.
+        # The order stays live in the Kalshi book; nightly consolidation reconciles open positions.
 
         # Platform declined the order (live stub or real rejection)
         if result_status == "declined":
