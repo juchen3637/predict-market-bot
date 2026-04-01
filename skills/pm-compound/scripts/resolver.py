@@ -22,10 +22,14 @@ sys.path.insert(0, str(_SCRIPTS_DIR))
 _PREDICT_SCRIPTS_DIR = _PROJECT_ROOT / "skills" / "pm-predict" / "scripts"
 sys.path.insert(0, str(_PREDICT_SCRIPTS_DIR))
 
+import os
+from datetime import datetime, timezone
+
 from config_loader import TRADE_LOG_PATH  # type: ignore[import]
 from brier_score import compute_rolling_brier  # type: ignore[import]
 from log_trade import compute_pnl, update_resolved_trade
 from platform_client import get_market_resolution
+import kalshi_client  # type: ignore[import]
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +92,8 @@ def run() -> None:
 
     resolved_count = 0
 
+    use_demo = os.environ.get("KALSHI_USE_DEMO", "true").lower() == "true"
+
     for trade in trades:
         trade_id = trade.get("trade_id", "")
         market_id = trade.get("market_id", "")
@@ -96,9 +102,34 @@ def run() -> None:
         size_contracts = int(trade.get("size_contracts", 0))
         entry_price = float(trade.get("entry_price", 0.5))
         fill_price = float(trade.get("fill_price") or entry_price)
+        order_id = trade.get("order_id")
 
         if not market_id or not platform:
             continue
+
+        # For Kalshi live orders, check whether the order actually filled before
+        # querying market resolution. Unfilled (canceled) orders are "expired" — no
+        # capital was deployed, so P&L is zero.
+        if platform == "kalshi" and order_id and trade.get("status") == "placed":
+            order_info = kalshi_client.get_order(order_id, use_demo=use_demo)
+            order_status = order_info.get("status")
+            if order_status == "resting":
+                # Still live in the book — check again tomorrow
+                continue
+            elif order_status == "canceled":
+                now = datetime.now(timezone.utc).isoformat()
+                success = update_resolved_trade(trade_id, "expired", 0.0, now)
+                if success:
+                    resolved_count += 1
+                    print(f"[resolver] Expired (unfilled) {trade_id}: order canceled, P&L=+0.0000")
+                else:
+                    print(f"[resolver] WARNING: trade_id {trade_id} not found in log", file=sys.stderr)
+                continue
+            elif order_status == "filled":
+                # Order did fill — update fill_price then fall through to market resolution
+                if order_info.get("fill_price") is not None:
+                    fill_price = order_info["fill_price"]
+            # "unknown" → fall through to market resolution as a best-effort
 
         resolution = get_market_resolution(market_id, platform)
         if resolution is None:

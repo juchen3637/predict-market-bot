@@ -221,6 +221,43 @@ def place_order(
 
 
 # ---------------------------------------------------------------------------
+# Order Status
+# ---------------------------------------------------------------------------
+
+def get_order(order_id: str, use_demo: bool = True) -> dict[str, Any]:
+    """
+    Fetch a single Kalshi order by ID.
+
+    Returns {"status": "resting"|"filled"|"canceled"|"unknown", "fill_price": float | None}
+    Kalshi statuses: "resting" = still open, "executed" = filled, "canceled" = expired/cancelled
+    """
+    path = f"/trade-api/v2/portfolio/orders/{order_id}"
+    headers = _get_demo_headers("GET", path) if use_demo else _get_headers("GET", path)
+    if headers is None:
+        return {"status": "unknown", "fill_price": None}
+    base_url = KALSHI_DEMO_URL if use_demo else KALSHI_BASE_URL
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            resp = client.get(f"{base_url}/portfolio/orders/{order_id}", headers=headers)
+        resp.raise_for_status()
+        order = resp.json().get("order", {})
+        status_str = order.get("status", "")
+        if status_str == "executed":
+            raw_fill = order.get("avg_price") or order.get("avg_fill_price", 0)
+            return {"status": "filled", "fill_price": float(raw_fill) / 100.0}
+        elif status_str == "resting":
+            return {"status": "resting", "fill_price": None}
+        elif status_str in ("canceled", "cancellation_requested"):
+            return {"status": "canceled", "fill_price": None}
+        else:
+            print(f"[pm-risk] get_order({order_id}): unexpected status '{status_str}'", file=sys.stderr)
+            return {"status": "unknown", "fill_price": None}
+    except Exception as e:
+        print(f"[pm-risk] get_order({order_id}) error: {e}", file=sys.stderr)
+        return {"status": "unknown", "fill_price": None}
+
+
+# ---------------------------------------------------------------------------
 # Depth Check
 # ---------------------------------------------------------------------------
 

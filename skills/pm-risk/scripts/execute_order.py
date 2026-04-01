@@ -56,6 +56,7 @@ class TradeRecord:
     title: str = ""
     hedge_needed: bool = False  # set if market moved >5% from entry after fill
     hedge_order_id: str | None = None  # order_id of the hedge order, if placed
+    order_id: str | None = None  # platform order_id for later status checks
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +301,7 @@ def execute(
             "fill_price": fill_price,
             "status": status,
             "hedge_needed": hedge_needed,
+            "order_id": order_id,
         })
 
         # Auto-hedge: place offsetting order if hedge_needed

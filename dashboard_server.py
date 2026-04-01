@@ -309,9 +309,10 @@ def _compute_live_metrics(resolved_trades: list[dict]) -> dict:
         return {"trade_count": 0, "win_rate": None, "max_drawdown": None,
                 "profit_factor": None, "total_pnl": 0.0}
 
-    trade_count = len(resolved_trades)
-    wins = sum(1 for t in resolved_trades if t.get("outcome") == "win")
-    win_rate = wins / trade_count
+    wl_trades = [t for t in resolved_trades if t.get("outcome") in ("win", "loss")]
+    trade_count = len(wl_trades)
+    wins = sum(1 for t in wl_trades if t.get("outcome") == "win")
+    win_rate = wins / trade_count if trade_count else 0.0
 
     gross_profit = sum(float(t["pnl"]) for t in resolved_trades if float(t.get("pnl", 0)) > 0)
     gross_loss = sum(abs(float(t["pnl"])) for t in resolved_trades if float(t.get("pnl", 0)) < 0)
@@ -383,6 +384,7 @@ def _build_dashboard_data() -> dict:
         resolved = [t for t in mode_trades if t.get("outcome") is not None and t.get("pnl") is not None]
         win_count = sum(1 for t in resolved if t.get("outcome") == "win")
         loss_count = sum(1 for t in resolved if t.get("outcome") == "loss")
+        expired_count = sum(1 for t in resolved if t.get("outcome") == "expired")
         recent_resolved = sorted(resolved, key=lambda t: t.get("resolved_at", ""), reverse=True)[:200]
         return {
             "metrics": _compute_live_metrics(resolved),
@@ -393,6 +395,7 @@ def _build_dashboard_data() -> dict:
             "resolved_count": len(resolved),
             "win_count": win_count,
             "loss_count": loss_count,
+            "expired_count": expired_count,
         }
 
     computed_at = metrics.get("computed_at", "")

@@ -474,6 +474,8 @@ function _renderResolvedRow(t) {
   var resolved = (t.resolved_at || '').slice(0, 16).replace('T', ' ');
   var outcome = t.outcome === 'win'
     ? '<span style="color:#22c55e;font-family:\'Geist Mono\',monospace;font-size:0.75rem">WIN</span>'
+    : t.outcome === 'expired'
+    ? '<span style="color:#94a3b8;font-family:\'Geist Mono\',monospace;font-size:0.75rem">EXPIRED</span>'
     : '<span style="color:#ef4444;font-family:\'Geist Mono\',monospace;font-size:0.75rem">LOSS</span>';
   return '<tr>' +
     '<td class="td-mono" title="' + escHtml(t.market_id) + '">' + escHtml((t.market_id || '').slice(-14)) + '</td>' +

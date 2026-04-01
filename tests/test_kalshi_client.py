@@ -293,6 +293,97 @@ def test_rsa_signing_missing_key_raises(monkeypatch):
 # direction "no" uses no_price field
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# get_order — all status paths
+# ---------------------------------------------------------------------------
+
+def test_get_order_missing_credentials_returns_unknown(monkeypatch):
+    monkeypatch.delenv("KALSHI_DEMO_API_KEY", raising=False)
+    monkeypatch.delenv("KALSHI_DEMO_API_SECRET", raising=False)
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", "")
+
+    result = kc.get_order("order-123", use_demo=True)
+
+    assert result["status"] == "unknown"
+    assert result["fill_price"] is None
+
+
+def test_get_order_resting_returns_resting(monkeypatch):
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {"order": {"order_id": "order-123", "status": "resting"}})
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        result = kc.get_order("order-123", use_demo=True)
+
+    assert result["status"] == "resting"
+    assert result["fill_price"] is None
+
+
+def test_get_order_executed_returns_filled_with_price(monkeypatch):
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {
+        "order": {"order_id": "order-123", "status": "executed", "avg_price": 6500}
+    })
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        result = kc.get_order("order-123", use_demo=True)
+
+    assert result["status"] == "filled"
+    assert result["fill_price"] == pytest.approx(65.0)
+
+
+def test_get_order_canceled_returns_canceled(monkeypatch):
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {"order": {"order_id": "order-123", "status": "canceled"}})
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        result = kc.get_order("order-123", use_demo=True)
+
+    assert result["status"] == "canceled"
+    assert result["fill_price"] is None
+
+
+def test_get_order_unknown_status_returns_unknown(monkeypatch):
+    """Unexpected status values must NOT map to canceled — avoid wiping real positions."""
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {"order": {"order_id": "order-123", "status": "partially_filled"}})
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        result = kc.get_order("order-123", use_demo=True)
+
+    assert result["status"] == "unknown"
+    assert result["fill_price"] is None
+
+
+def test_get_order_http_error_returns_unknown(monkeypatch):
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.side_effect = Exception("timeout")
+        result = kc.get_order("order-123", use_demo=True)
+
+    assert result["status"] == "unknown"
+    assert result["fill_price"] is None
+
+
+# ---------------------------------------------------------------------------
+# direction "no" uses no_price field
+# ---------------------------------------------------------------------------
+
 def test_no_direction_uses_no_price_field(monkeypatch):
     for k, v in _CREDS.items():
         monkeypatch.setenv(k, v)
