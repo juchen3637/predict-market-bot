@@ -69,6 +69,7 @@ def place_polymarket_order(
     contracts: int,
     limit_price: float,
     clob_token_ids: list[str] | None = None,
+    use_demo: bool = False,
 ) -> dict[str, Any]:
     """
     Place a limit order on Polymarket CLOB.
@@ -90,7 +91,7 @@ def place_polymarket_order(
     if clob_token_ids:
         token_id = clob_token_ids[0] if direction == "yes" else clob_token_ids[1] if len(clob_token_ids) > 1 else clob_token_ids[0]
 
-    result = _pm_place(market_id, direction, contracts, limit_price, token_id=token_id)
+    result = _pm_place(market_id, direction, contracts, limit_price, token_id=token_id, use_demo=use_demo)
     return result if result is not None else {
         "order_id": None,
         "fill_price": None,
@@ -238,7 +239,8 @@ def execute(
             status = "placed"
         elif platform == "polymarket":
             clob_token_ids = signal.get("clob_token_ids") or []
-            result = place_polymarket_order(market_id, direction, contracts, entry_price, clob_token_ids=clob_token_ids)
+            pm_use_demo = os.environ.get("POLYMARKET_USE_DEMO", "false").lower() == "true"
+            result = place_polymarket_order(market_id, direction, contracts, entry_price, clob_token_ids=clob_token_ids, use_demo=pm_use_demo)
             status = "placed"
         else:
             raise ValueError(f"Unknown platform: {platform}")

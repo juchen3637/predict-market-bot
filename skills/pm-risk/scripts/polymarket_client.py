@@ -24,6 +24,9 @@ from py_clob_client.order_builder.constants import BUY, SELL
 _CLOB_HOST = os.environ.get("POLYMARKET_CLOB_URL", "https://clob.polymarket.com")
 _CHAIN_ID = int(os.environ.get("POLYMARKET_CHAIN_ID", str(POLYGON)))
 
+_DEMO_CLOB_HOST = os.environ.get("POLYMARKET_DEMO_CLOB_URL", "https://clob.testnet.polymarket.com")
+_DEMO_CHAIN_ID = int(os.environ.get("POLYMARKET_DEMO_CHAIN_ID", "80002"))
+
 _DECLINED = {
     "order_id": None,
     "fill_price": None,
@@ -36,12 +39,22 @@ _DECLINED = {
 # Auth
 # ---------------------------------------------------------------------------
 
-def _get_client() -> ClobClient | None:
+def _get_client(use_demo: bool = False) -> ClobClient | None:
     """Return an authenticated ClobClient, or None if any credential is missing."""
-    api_key = os.environ.get("POLYMARKET_API_KEY", "")
-    api_secret = os.environ.get("POLYMARKET_API_SECRET", "")
-    api_passphrase = os.environ.get("POLYMARKET_API_PASSPHRASE", "")
-    private_key = os.environ.get("POLYMARKET_WALLET_PRIVATE_KEY", "")
+    if use_demo:
+        api_key = os.environ.get("POLYMARKET_DEMO_API_KEY", "")
+        api_secret = os.environ.get("POLYMARKET_DEMO_API_SECRET", "")
+        api_passphrase = os.environ.get("POLYMARKET_DEMO_API_PASSPHRASE", "")
+        private_key = os.environ.get("POLYMARKET_DEMO_WALLET_PRIVATE_KEY", "")
+        host = _DEMO_CLOB_HOST
+        chain_id = _DEMO_CHAIN_ID
+    else:
+        api_key = os.environ.get("POLYMARKET_API_KEY", "")
+        api_secret = os.environ.get("POLYMARKET_API_SECRET", "")
+        api_passphrase = os.environ.get("POLYMARKET_API_PASSPHRASE", "")
+        private_key = os.environ.get("POLYMARKET_WALLET_PRIVATE_KEY", "")
+        host = _CLOB_HOST
+        chain_id = _CHAIN_ID
 
     if not all([api_key, api_secret, api_passphrase, private_key]):
         return None
@@ -52,8 +65,8 @@ def _get_client() -> ClobClient | None:
         api_passphrase=api_passphrase,
     )
     return ClobClient(
-        host=_CLOB_HOST,
-        chain_id=_CHAIN_ID,
+        host=host,
+        chain_id=chain_id,
         key=private_key,
         creds=creds,
     )
@@ -70,6 +83,7 @@ def place_order(
     limit_price: float,
     side: str = "BUY",
     token_id: str | None = None,
+    use_demo: bool = False,
 ) -> dict[str, Any]:
     """
     Place a limit order on Polymarket CLOB.
@@ -89,7 +103,7 @@ def place_order(
         {"order_id": str | None, "fill_price": float | None, "status": str}
         status is one of: "filled", "open", "declined"
     """
-    client = _get_client()
+    client = _get_client(use_demo=use_demo)
     if client is None:
         return dict(_DECLINED)
 
@@ -155,6 +169,7 @@ def get_depth(
     direction: str,
     limit_price: float,
     contracts: int,
+    use_demo: bool = False,
 ) -> bool:
     """
     Check if the Polymarket CLOB orderbook has sufficient liquidity.
@@ -164,7 +179,7 @@ def get_depth(
 
     Returns True if available size >= requested contracts.
     """
-    client = _get_client()
+    client = _get_client(use_demo=use_demo)
     if client is None:
         return True  # credential-missing fallback: pass through
 
