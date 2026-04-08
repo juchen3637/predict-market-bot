@@ -25,7 +25,13 @@ _CLOB_HOST = os.environ.get("POLYMARKET_CLOB_URL", "https://clob.polymarket.com"
 _CHAIN_ID = int(os.environ.get("POLYMARKET_CHAIN_ID", str(POLYGON)))
 
 _DEMO_CLOB_HOST = os.environ.get("POLYMARKET_DEMO_CLOB_URL", "https://clob.testnet.polymarket.com")
-_DEMO_CHAIN_ID = int(os.environ.get("POLYMARKET_DEMO_CHAIN_ID", "80002"))
+try:
+    _DEMO_CHAIN_ID = int(os.environ.get("POLYMARKET_DEMO_CHAIN_ID", "80002"))
+except ValueError:
+    raise ValueError(
+        f"POLYMARKET_DEMO_CHAIN_ID must be an integer "
+        f"(got: {os.environ.get('POLYMARKET_DEMO_CHAIN_ID')!r})"
+    )
 
 _DECLINED = {
     "order_id": None,

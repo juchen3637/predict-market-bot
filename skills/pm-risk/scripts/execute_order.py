@@ -217,9 +217,10 @@ def execute(
 
     # Resolve effective paper mode for this platform
     effective_paper = paper_mode or (platform == "polymarket" and polymarket_paper)
+    pm_use_demo = os.environ.get("POLYMARKET_USE_DEMO", "false").lower() == "true"
 
     # Pre-trade orderbook depth check (skipped in paper mode — no real book to query)
-    if not effective_paper and not has_adequate_depth(platform, market_id, direction, entry_price, contracts):
+    if not effective_paper and not has_adequate_depth(platform, market_id, direction, entry_price, contracts, use_demo=pm_use_demo):
         print(
             f"[pm-risk] Insufficient orderbook depth for {market_id} ({platform}). Aborting.",
             file=sys.stderr,
@@ -239,7 +240,6 @@ def execute(
             status = "placed"
         elif platform == "polymarket":
             clob_token_ids = signal.get("clob_token_ids") or []
-            pm_use_demo = os.environ.get("POLYMARKET_USE_DEMO", "false").lower() == "true"
             result = place_polymarket_order(market_id, direction, contracts, entry_price, clob_token_ids=clob_token_ids, use_demo=pm_use_demo)
             status = "placed"
         else:

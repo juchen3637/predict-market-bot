@@ -29,6 +29,7 @@ def _polymarket_depth(
     direction: str,
     limit_price: float,
     contracts: int,
+    use_demo: bool = False,
 ) -> bool:
     """
     Check Polymarket CLOB orderbook depth.
@@ -36,17 +37,18 @@ def _polymarket_depth(
 
     Reference: https://docs.polymarket.com/#get-order-book
     """
-    api_key = os.environ.get("POLYMARKET_API_KEY", "")
+    key_var = "POLYMARKET_DEMO_API_KEY" if use_demo else "POLYMARKET_API_KEY"
+    api_key = os.environ.get(key_var, "")
     if not api_key:
         print(
-            f"[pm-risk] check_depth: POLYMARKET_API_KEY not set for {market_id}. "
+            f"[pm-risk] check_depth: {key_var} not set for {market_id}. "
             "Depth check skipped.",
             file=sys.stderr,
         )
         return True
 
     from polymarket_client import get_depth as _pm_depth
-    return _pm_depth(market_id, direction, limit_price, contracts)
+    return _pm_depth(market_id, direction, limit_price, contracts, use_demo=use_demo)
 
 
 def _kalshi_depth(
@@ -84,6 +86,7 @@ def has_adequate_depth(
     direction: str,
     limit_price: float,
     contracts: int,
+    use_demo: bool = False,
 ) -> bool:
     """
     Return True if the orderbook has sufficient liquidity to fill the order.
@@ -100,7 +103,7 @@ def has_adequate_depth(
         False → reject order; log insufficient_depth
     """
     if platform == "polymarket":
-        return _polymarket_depth(market_id, direction, limit_price, contracts)
+        return _polymarket_depth(market_id, direction, limit_price, contracts, use_demo=use_demo)
     if platform == "kalshi":
         return _kalshi_depth(market_id, direction, limit_price, contracts)
 
