@@ -59,11 +59,18 @@ if not private_key:
 
 print(f"Deriving credentials for {label}...")
 
+# Credential derivation always uses chain_id=137 (the CLOB API server runs on Polygon mainnet).
+# The chain_id in the ClobClient used for *order signing* differs (80002 for Amoy),
+# but the L1 auth endpoint always expects a Polygon-signed EIP-712 message.
 client = ClobClient(
     host="https://clob.polymarket.com",
     key=private_key,
-    chain_id=chain_id,
+    chain_id=137,
 )
+
+print(f"Wallet address derived from private key: {client.get_address()}")
+print("(Verify this matches your MetaMask address before continuing)")
+input("Press Enter to continue...")
 
 creds = client.create_or_derive_api_creds()
 
