@@ -248,7 +248,11 @@ def get_order(order_id: str, use_demo: bool = True) -> dict[str, Any]:
         elif status_str == "resting":
             return {"status": "resting", "fill_price": None}
         elif status_str in ("canceled", "cancellation_requested"):
-            return {"status": "canceled", "fill_price": None}
+            filled = int(order.get("no_count_filled", 0)) + int(order.get("yes_count_filled", 0))
+            if filled > 0:
+                raw_fill = order.get("avg_price") or order.get("avg_fill_price", 0)
+                return {"status": "canceled", "fill_price": float(raw_fill) / 100.0, "filled_count": filled}
+            return {"status": "canceled", "fill_price": None, "filled_count": 0}
         else:
             print(f"[pm-risk] get_order({order_id}): unexpected status '{status_str}'", file=sys.stderr)
             return {"status": "unknown", "fill_price": None}

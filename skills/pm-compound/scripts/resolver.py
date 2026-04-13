@@ -117,14 +117,20 @@ def run() -> None:
                 # Still live in the book — check again tomorrow
                 continue
             elif order_status == "canceled":
-                now = datetime.now(timezone.utc).isoformat()
-                success = update_resolved_trade(trade_id, "expired", 0.0, now)
-                if success:
-                    resolved_count += 1
-                    print(f"[resolver] Expired (unfilled) {trade_id}: order canceled, P&L=+0.0000")
+                if order_info.get("filled_count", 0) > 0:
+                    # Order partially/fully filled before cancellation — fall through to market resolution
+                    if order_info.get("fill_price") is not None:
+                        fill_price = order_info["fill_price"]
                 else:
-                    print(f"[resolver] WARNING: trade_id {trade_id} not found in log", file=sys.stderr)
-                continue
+                    # Truly unfilled order
+                    now = datetime.now(timezone.utc).isoformat()
+                    success = update_resolved_trade(trade_id, "expired", 0.0, now)
+                    if success:
+                        resolved_count += 1
+                        print(f"[resolver] Expired (unfilled) {trade_id}: order canceled, P&L=+0.0000")
+                    else:
+                        print(f"[resolver] WARNING: trade_id {trade_id} not found in log", file=sys.stderr)
+                    continue
             elif order_status == "filled":
                 # Order did fill — update fill_price then fall through to market resolution
                 if order_info.get("fill_price") is not None:
