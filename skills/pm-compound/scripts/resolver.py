@@ -135,7 +135,9 @@ def run() -> None:
                 # Order did fill — update fill_price then fall through to market resolution
                 if order_info.get("fill_price") is not None:
                     fill_price = order_info["fill_price"]
-            # "unknown" → fall through to market resolution as a best-effort
+            elif order_status == "unknown":
+                # Can't determine order state (API error / not found) — skip, try again next run
+                continue
 
         resolution = get_market_resolution(market_id, platform, use_demo=use_demo)
         if resolution is None:
