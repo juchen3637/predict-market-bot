@@ -27,13 +27,18 @@ load_dotenv(
 # Kalshi Auth
 # ---------------------------------------------------------------------------
 
-def _kalshi_headers(method: str, path: str) -> dict[str, str]:
+def _kalshi_headers(method: str, path: str, use_demo: bool = False) -> dict[str, str]:
     """Build RSA-SHA256 auth headers for Kalshi REST API (v2)."""
-    api_key = os.environ.get("KALSHI_API_KEY", "")
-    api_secret = os.environ.get("KALSHI_API_SECRET", "")
+    if use_demo:
+        api_key = os.environ.get("KALSHI_DEMO_API_KEY", "")
+        api_secret = os.environ.get("KALSHI_DEMO_API_SECRET", "")
+    else:
+        api_key = os.environ.get("KALSHI_API_KEY", "")
+        api_secret = os.environ.get("KALSHI_API_SECRET", "")
     if not api_key or not api_secret:
+        label = "KALSHI_DEMO" if use_demo else "KALSHI"
         raise EnvironmentError(
-            "KALSHI_API_KEY and KALSHI_API_SECRET must be set in .env"
+            f"{label}_API_KEY and {label}_API_SECRET must be set in .env"
         )
     ts = str(int(time.time() * 1000))
     msg = (ts + method.upper() + path).encode()
@@ -51,9 +56,11 @@ def _kalshi_headers(method: str, path: str) -> dict[str, str]:
     }
 
 
-def _kalshi_base_url() -> str:
-    # Resolution and market data always use production — markets settle on
-    # production regardless of whether orders were placed on demo.
+def _kalshi_base_url(use_demo: bool = False) -> str:
+    if use_demo:
+        return os.environ.get(
+            "KALSHI_DEMO_URL", "https://demo-api.kalshi.co/trade-api/v2"
+        )
     return os.environ.get(
         "KALSHI_BASE_URL", "https://api.elections.kalshi.com/trade-api/v2"
     )
@@ -63,7 +70,7 @@ def _kalshi_base_url() -> str:
 # Single Market Resolution
 # ---------------------------------------------------------------------------
 
-def get_market_resolution(market_id: str, platform: str) -> dict[str, Any] | None:
+def get_market_resolution(market_id: str, platform: str, use_demo: bool = False) -> dict[str, Any] | None:
     """
     Query a single market for resolution status.
 
@@ -74,7 +81,7 @@ def get_market_resolution(market_id: str, platform: str) -> dict[str, Any] | Non
     if platform == "polymarket":
         return _polymarket_resolution(market_id)
     elif platform == "kalshi":
-        return _kalshi_resolution(market_id)
+        return _kalshi_resolution(market_id, use_demo=use_demo)
     else:
         return None
 
@@ -192,12 +199,12 @@ def _is_stale_amm_market(data: "dict[str, Any]") -> bool:
     )
 
 
-def _kalshi_resolution(market_id: str) -> dict[str, Any] | None:
-    base_url = _kalshi_base_url()
+def _kalshi_resolution(market_id: str, use_demo: bool = False) -> dict[str, Any] | None:
+    base_url = _kalshi_base_url(use_demo=use_demo)
     path = f"/trade-api/v2/markets/{market_id}"
     try:
         with httpx.Client(timeout=15.0) as client:
-            headers = _kalshi_headers("GET", path)
+            headers = _kalshi_headers("GET", path, use_demo=use_demo)
             resp = client.get(f"{base_url}/markets/{market_id}", headers=headers)
             resp.raise_for_status()
             data = resp.json().get("market", resp.json())

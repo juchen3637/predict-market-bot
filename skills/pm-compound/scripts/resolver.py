@@ -131,7 +131,7 @@ def run() -> None:
                     fill_price = order_info["fill_price"]
             # "unknown" → fall through to market resolution as a best-effort
 
-        resolution = get_market_resolution(market_id, platform)
+        resolution = get_market_resolution(market_id, platform, use_demo=use_demo)
         if resolution is None:
             print(
                 f"[resolver] WARNING: could not fetch resolution for {trade_id} ({market_id})",
