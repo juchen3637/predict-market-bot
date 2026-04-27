@@ -276,10 +276,12 @@ def get_depth(
     use_demo: bool = True,
 ) -> bool:
     """
-    Check if the Kalshi orderbook has sufficient liquidity.
+    Check if the Kalshi orderbook has sufficient liquidity to fill `contracts`
+    of `direction` at limit `limit_price`.
 
-    Sums contracts from orderbook.yes (or .no) where price >= our limit cents.
-    Returns True if total >= requested contracts.
+    Kalshi's orderbook stores YES and NO BIDS (no offers). To BUY direction at
+    limit L, the matching counterparty is a bidder on the OPPOSITE side at
+    price >= (1 - L), since BUY YES @ L = SELL NO @ (1 - L) and vice versa.
     """
     ob_path = _ORDERBOOK_PATH_TPL.format(ticker=market_ticker)
     headers = _get_demo_headers("GET", ob_path) if use_demo else _get_headers("GET", ob_path)
@@ -287,7 +289,11 @@ def get_depth(
         return True  # credential-missing fallback: pass through
 
     base_url = KALSHI_DEMO_URL if use_demo else KALSHI_BASE_URL
-    limit_cents = int(round(limit_price * 100))
+    cross_price = 1.0 - limit_price
+    if cross_price <= 0:
+        return False  # limit_price >= 1.0 cannot be filled
+    cross_cents = int(round(cross_price * 100))
+    opposite = "no" if direction == "yes" else "yes"
 
     try:
         with httpx.Client(timeout=15.0) as client:
@@ -303,16 +309,18 @@ def get_depth(
         # New API format: orderbook_fp with decimal prices and dollar amounts
         ob_fp = data.get("orderbook_fp", {})
         if ob_fp:
-            key = f"{direction}_dollars"
+            key = f"{opposite}_dollars"
             levels = ob_fp.get(key, [])
-            total_dollars = sum(float(lvl[1]) for lvl in (levels or []) if float(lvl[0]) >= limit_price)
-            needed_dollars = contracts * limit_price
-            return total_dollars >= needed_dollars
+            total_dollars = sum(
+                float(lvl[1]) for lvl in (levels or []) if float(lvl[0]) >= cross_price
+            )
+            available_contracts = total_dollars / cross_price
+            return available_contracts >= contracts
 
         # Fallback: legacy orderbook format with integer cents and contract counts
         orderbook = data.get("orderbook", {})
-        levels = orderbook.get(direction, [])
-        total = sum(lvl[1] for lvl in (levels or []) if lvl[0] >= limit_cents)
+        levels = orderbook.get(opposite, [])
+        total = sum(lvl[1] for lvl in (levels or []) if lvl[0] >= cross_cents)
         return total >= contracts
 
     except Exception as e:
