@@ -10,7 +10,7 @@ pipeline:
   max_pipeline_cycles_per_day: 48    # Safety cap (every 30 min = 48/day)
   stage_timeouts:
     scan: 120
-    research: 600
+    research: 1500                   # bumped — cold-cache 50-candidate runs exceed 600s even with parallelism
     predict: 1200                    # bumped — LLM ensemble over 26+ markets
     risk: 300
 

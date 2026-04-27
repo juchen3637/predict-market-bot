@@ -204,6 +204,35 @@ def _ts() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
 
 
+# Sentinel exit code used when a stage subprocess is killed for exceeding its
+# timeout. 124 matches GNU coreutils `timeout(1)` convention.
+STAGE_TIMEOUT_RC = 124
+
+# stderr markers that indicate an environmental / transient failure rather
+# than a real code bug. Matching any of these keeps consecutive_failures flat.
+_TRANSIENT_STDERR_MARKERS = (
+    "name resolution",
+    "temporary failure in name resolution",
+    "connection refused",
+    "connection reset",
+    "connection aborted",
+    "timed out",
+    "stage timed out",
+    "read timeout",
+    "502 bad gateway",
+    "503 service unavailable",
+    "504 gateway timeout",
+)
+
+
+def _is_transient_failure(rc: int, stderr_text: str) -> bool:
+    """Return True when a stage failure looks environmental, not a real bug."""
+    if rc == STAGE_TIMEOUT_RC:
+        return True
+    lower = (stderr_text or "").lower()
+    return any(marker in lower for marker in _TRANSIENT_STDERR_MARKERS)
+
+
 def _run_stage(
     logger: logging.Logger,
     script: Path,
@@ -211,32 +240,52 @@ def _run_stage(
     stdin_data: bytes | None = None,
     dry_run: bool = False,
     timeout: int = 600,
-) -> tuple[bytes, int]:
+) -> tuple[bytes, int, str]:
     """
     Run a pipeline stage script as a subprocess.
 
     Returns:
-        (stdout_bytes, returncode)
+        (stdout_bytes, returncode, stderr_text)
+
+    On subprocess.TimeoutExpired the child is killed, returncode is set to
+    STAGE_TIMEOUT_RC (124), and a synthetic "stage timed out" line is
+    prepended to stderr_text so downstream classifiers can detect it.
     """
     cmd = [sys.executable, str(script)] + (extra_args or [])
     logger.info("Running stage: %s", " ".join(str(c) for c in cmd))
 
     if dry_run:
         logger.info("[dry-run] Skipping actual execution of %s", script.name)
-        return b'{"scan_id": "dry_run", "candidates": [], "signals": []}', 0
+        return b'{"scan_id": "dry_run", "candidates": [], "signals": []}', 0, ""
 
-    result = subprocess.run(
-        cmd,
-        input=stdin_data,
-        capture_output=True,
-        timeout=timeout,
-    )
-
-    if result.stderr:
-        for line in result.stderr.decode(errors="replace").splitlines():
+    try:
+        result = subprocess.run(
+            cmd,
+            input=stdin_data,
+            capture_output=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        logger.error(
+            "Stage %s timed out after %ds — killing subprocess",
+            script.stem, timeout,
+        )
+        # subprocess.run() already tries to kill on TimeoutExpired, but capture
+        # whatever partial output the child produced.
+        partial_stdout = exc.stdout or b""
+        partial_stderr_bytes = exc.stderr or b""
+        partial_stderr = partial_stderr_bytes.decode(errors="replace")
+        synth = f"[run_pipeline] stage timed out after {timeout}s\n"
+        combined_stderr = synth + partial_stderr
+        for line in combined_stderr.splitlines():
             logger.debug("[%s stderr] %s", script.stem, line)
+        return partial_stdout, STAGE_TIMEOUT_RC, combined_stderr
 
-    return result.stdout, result.returncode
+    stderr_text = result.stderr.decode(errors="replace") if result.stderr else ""
+    for line in stderr_text.splitlines():
+        logger.debug("[%s stderr] %s", script.stem, line)
+
+    return result.stdout, result.returncode, stderr_text
 
 
 def _validate_json_output(data: bytes, stage_name: str, logger: logging.Logger) -> bool:
@@ -475,14 +524,27 @@ def _execute_stage(
     _write_run_manifest(manifest)
     stage_start = time.monotonic()
 
-    output, rc = _run_stage(logger, script, extra_args=extra_args,
-                            dry_run=dry_run, timeout=timeout)
+    output, rc, stderr_text = _run_stage(
+        logger, script, extra_args=extra_args,
+        dry_run=dry_run, timeout=timeout,
+    )
 
     valid = (not validate_json) or _validate_json_output(output, stage_name, logger)
     if rc != 0 or not valid:
+        transient = _is_transient_failure(rc, stderr_text)
         error = f"rc={rc}" if rc != 0 else "invalid JSON output"
-        logger.error("Stage %s failed (rc=%d, valid=%s)", stage_name, rc, valid)
-        manifest = _update_stage(manifest, stage_name, status="failed", error=error)
+        if transient:
+            error += " (transient)"
+        logger.error(
+            "Stage %s failed (rc=%d, valid=%s, transient=%s)",
+            stage_name, rc, valid, transient,
+        )
+        manifest = _update_stage(
+            manifest, stage_name,
+            status="failed",
+            error=error,
+            transient=transient,
+        )
         manifest = {**manifest, "status": "failed",
                     "completed_at": datetime.now(timezone.utc).isoformat()}
         _write_run_manifest(manifest)
@@ -533,8 +595,23 @@ def run_pipeline(dry_run: bool = False) -> int:
     _write_run_manifest(manifest)
 
     def _fail(updated_manifest: dict) -> int:
-        state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
-        _handle_consecutive_failures(state, logger)
+        # Transient failures (DNS blips, 5xx, stage timeouts) should not count
+        # toward the 3-strike STOP — a 10-minute network outage should not
+        # halt the bot for days.
+        transient = any(
+            stage.get("transient")
+            for stage in updated_manifest.get("stages", {}).values()
+            if isinstance(stage, dict)
+        )
+        if transient:
+            logger.warning(
+                "Stage failure classified as transient — "
+                "consecutive_failures unchanged (current=%d)",
+                state.get("consecutive_failures", 0),
+            )
+        else:
+            state["consecutive_failures"] = state.get("consecutive_failures", 0) + 1
+            _handle_consecutive_failures(state, logger)
         _save_state(state)
         return 1  # noqa: not used as return value — caller returns this
 
