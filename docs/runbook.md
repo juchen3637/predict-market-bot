@@ -102,3 +102,72 @@ python scripts/run_pipeline.py --cycles 1 --paper
 | `OrderBook depth insufficient` | Market too thin at entry price | Increase min_liquidity_usd threshold in settings.yaml |
 | `Brier score missing` | Fewer than 10 resolved trades | Normal — continue collecting data |
 | `STOP file detected` | Kill switch active | `rm STOP` after investigation |
+
+---
+
+## Verifying the scan liquidity floor (post-deploy)
+
+Run after deploying any change to `filter_markets.py:passes_liquidity_floor`,
+`config/settings.yaml:scan.*`, or the `kalshi_client` / `polymarket_client`
+`get_orderbook_snapshot` helpers. Each block is one shell command;
+assumes you are in the project directory in the venv on the VPS.
+
+**Per-cycle probe counters** (validates the floor is filtering, not a no-op):
+
+```bash
+python3 scripts/diagnose_state.py | grep -E 'probe:|liquidity'
+```
+
+Look for `(probe: K/P kept)` on each recent run. Healthy: K/P >= 0.10
+(at least 10% kept) and P > 0 (probe is running). If K/P is 0 every
+cycle, the floor is too strict — drop `min_cross_side_dollars` in
+`config/settings.yaml`. If P is 0, `liquidity_check_enabled` is false.
+
+**Post-floor placements** (validates the bot is actually trading):
+
+```bash
+python3 -c "
+import json
+rows = [json.loads(l) for l in open('data/trade_log.jsonl') if l.strip()]
+post = [r for r in rows if r.get('scan_liquidity_floor') == 'v1']
+placed = [r for r in post if r['status'] in ('placed', 'paper', 'filled')]
+rejected = [r for r in post if r['status'] == 'rejected']
+print(f'post-floor: {len(post)} entries, {len(placed)} placed/paper, {len(rejected)} rejected')
+"
+```
+
+Expect at least 1 placed/paper entry within 24h of deploy. Zero is a
+sign the floor is starving the pipeline OR that the predict stage is
+not generating signals (separate problem).
+
+**Per-cycle insufficient_depth rate** (validates we didn't bypass the live check):
+
+```bash
+python3 -c "
+import json, collections, datetime
+rows = [json.loads(l) for l in open('data/trade_log.jsonl') if l.strip()]
+today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+recent = [r for r in rows if r.get('placed_at','').startswith(today) and r.get('rejection_reason') == 'insufficient_depth']
+by_hour = collections.Counter(r['placed_at'][:13] for r in recent)
+print('insufficient_depth rejections per hour today:', dict(by_hour))
+"
+```
+
+Healthy: <= 2 per cycle on average. Rising counts mean predict-stage
+signals are still landing on markets with thin cross-side bids — tighten
+`min_cross_side_dollars` or investigate why the floor isn't catching them.
+
+### Acceptance checklist (24h post-deploy)
+
+- [ ] `liquidity_probe.probed > 0` every cycle (probe is running)
+- [ ] `dropped_thin / probed >= 0.20` (floor is filtering meaningfully)
+- [ ] At least 1 trade with `scan_liquidity_floor == "v1"` AND `status in ("placed", "paper")`
+- [ ] `insufficient_depth` rejections per cycle stay <= 2 on average
+- [ ] `consecutive_failures: 0`, no STOP, scan stage `duration_s < 60`
+
+### Emergency rollback
+
+In-band: set `scan.liquidity_check_enabled: false` in `config/settings.yaml`,
+commit, push, `git pull` on VPS — the next cycle skips the probe entirely.
+Alternative: `git revert <sha>` of the `feat(scan): add scan-time orderbook
+liquidity floor` commit.
