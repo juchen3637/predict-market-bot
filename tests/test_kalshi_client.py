@@ -626,3 +626,94 @@ def test_no_direction_uses_no_price_field(monkeypatch):
     assert "yes_price" not in captured["body"]
     assert captured["body"]["no_price"] == 40
     assert captured["body"]["side"] == "no"
+
+
+# ---------------------------------------------------------------------------
+# get_orderbook_snapshot — normalized {yes_bids, no_bids} as (price, dollars)
+# ---------------------------------------------------------------------------
+
+def test_get_orderbook_snapshot_fp_format(monkeypatch):
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {
+        "orderbook_fp": {
+            "yes_dollars": [[0.95, 9.5], [0.90, 9.0]],
+            "no_dollars":  [[0.50, 20.0]],
+        }
+    })
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        snap = kc.get_orderbook_snapshot("KXBTC", use_demo=True)
+
+    assert snap == {
+        "yes_bids": [(0.95, 9.5), (0.90, 9.0)],
+        "no_bids":  [(0.50, 20.0)],
+    }
+
+
+def test_get_orderbook_snapshot_legacy_format(monkeypatch):
+    """Legacy cents/contracts payload is normalized to (decimal_price, dollars)."""
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {
+        "orderbook": {
+            "yes": [[65, 8], [60, 7]],   # 8 contracts at 0.65, 7 at 0.60
+            "no":  [[35, 100]],
+        }
+    })
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        snap = kc.get_orderbook_snapshot("KXBTC", use_demo=True)
+
+    # 0.65 * 8 = $5.20, 0.60 * 7 = $4.20, 0.35 * 100 = $35.00
+    assert snap["yes_bids"] == [(0.65, pytest.approx(5.2)), (0.60, pytest.approx(4.2))]
+    assert snap["no_bids"]  == [(0.35, pytest.approx(35.0))]
+
+
+def test_get_orderbook_snapshot_missing_credentials_returns_empty(monkeypatch):
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", "")
+
+    snap = kc.get_orderbook_snapshot("KXBTC", use_demo=True)
+
+    assert snap == {"yes_bids": [], "no_bids": []}
+
+
+def test_get_orderbook_snapshot_http_error_raises(monkeypatch):
+    """Snapshot raises on HTTP error; callers apply their own fail-open / fail-closed."""
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.side_effect = Exception("connect failed")
+        with pytest.raises(Exception, match="connect failed"):
+            kc.get_orderbook_snapshot("KXBTC", use_demo=True)
+
+
+def test_get_orderbook_snapshot_empty_orderbook_fp(monkeypatch):
+    """Empty orderbook_fp falls back to legacy parser; both empty → empty arrays."""
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_KEY", "test-key")
+    monkeypatch.setattr(kc, "KALSHI_DEMO_API_SECRET", _TEST_PEM)
+
+    mock_resp = _mock_response(200, {"orderbook_fp": {}, "orderbook": {}})
+    mock_resp.raise_for_status = MagicMock()
+
+    with patch("kalshi_client.httpx.Client") as mock_ctx:
+        mock_ctx.return_value.__enter__.return_value.get.return_value = mock_resp
+        snap = kc.get_orderbook_snapshot("KXBTC", use_demo=True)
+
+    assert snap == {"yes_bids": [], "no_bids": []}

@@ -170,6 +170,30 @@ def place_order(
 # Depth Check
 # ---------------------------------------------------------------------------
 
+def get_orderbook_snapshot(
+    market_id: str,
+    *,
+    use_demo: bool = False,
+) -> dict[str, list[tuple[float, float]]]:
+    """
+    Fetch Polymarket CLOB orderbook and return a normalized snapshot.
+
+    Returns {"asks": [(price, size)], "bids": [(price, size)]}.
+
+    Returns empty arrays when credentials are missing. Raises on CLOB error
+    so callers can apply their own fail-open / fail-closed policy.
+    """
+    client = _get_client(use_demo=use_demo)
+    if client is None:
+        return {"asks": [], "bids": []}
+
+    book = client.get_order_book(market_id)
+    return {
+        "asks": [(float(a.price), float(a.size)) for a in (book.asks or [])],
+        "bids": [(float(b.price), float(b.size)) for b in (book.bids or [])],
+    }
+
+
 def get_depth(
     market_id: str,
     direction: str,
@@ -181,35 +205,26 @@ def get_depth(
     Check if the Polymarket CLOB orderbook has sufficient liquidity.
 
     For "yes" BUY: sum asks where price <= limit_price.
-    For "no" BUY: sum bids where price >= (1 - limit_price).
-
-    Returns True if available size >= requested contracts.
+    For "no" BUY: sum bids where price >= (1 - limit_price). Fails open on
+    CLOB errors so depth checks don't block trading.
     """
     client = _get_client(use_demo=use_demo)
     if client is None:
         return True  # credential-missing fallback: pass through
 
     try:
-        book = client.get_order_book(market_id)
-        total = 0.0
-
-        if direction == "yes":
-            # Buying yes: look at asks at or below our limit price
-            for ask in (book.asks or []):
-                if float(ask.price) <= limit_price:
-                    total += float(ask.size)
-        else:
-            # Buying no: equivalent to selling yes; look at bids at or above (1 - limit_price)
-            threshold = 1.0 - limit_price
-            for bid in (book.bids or []):
-                if float(bid.price) >= threshold:
-                    total += float(bid.size)
-
-        return total >= contracts
-
+        snapshot = get_orderbook_snapshot(market_id, use_demo=use_demo)
     except Exception as e:
         print(
             f"[pm-risk] Polymarket depth check error for {market_id}: {e}. Passing through.",
             file=sys.stderr,
         )
-        return True  # fail open so depth errors don't block trading
+        return True  # fail open
+
+    if direction == "yes":
+        total = sum(size for price, size in snapshot["asks"] if price <= limit_price)
+    else:
+        threshold = 1.0 - limit_price
+        total = sum(size for price, size in snapshot["bids"] if price >= threshold)
+
+    return total >= contracts

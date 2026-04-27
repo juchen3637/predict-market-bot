@@ -207,3 +207,60 @@ def test_get_depth_missing_credentials_returns_true(monkeypatch):
     result = pc.get_depth("token-123", "yes", 0.60, 10)
 
     assert result is True
+
+
+# ---------------------------------------------------------------------------
+# get_orderbook_snapshot — normalized {asks, bids} as (price, size)
+# ---------------------------------------------------------------------------
+
+def test_get_orderbook_snapshot_returns_normalized_levels(monkeypatch):
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+
+    mock_client = MagicMock()
+    mock_client.get_order_book.return_value = _make_book(
+        asks=[_make_level("0.60", "5"), _make_level("0.65", "8")],
+        bids=[_make_level("0.35", "10")],
+    )
+
+    with patch.object(pc, "_get_client", return_value=mock_client):
+        snap = pc.get_orderbook_snapshot("token-123")
+
+    assert snap == {
+        "asks": [(0.60, 5.0), (0.65, 8.0)],
+        "bids": [(0.35, 10.0)],
+    }
+
+
+def test_get_orderbook_snapshot_missing_credentials_returns_empty(monkeypatch):
+    for key in _CREDS:
+        monkeypatch.delenv(key, raising=False)
+
+    snap = pc.get_orderbook_snapshot("token-123")
+
+    assert snap == {"asks": [], "bids": []}
+
+
+def test_get_orderbook_snapshot_clob_error_raises(monkeypatch):
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+
+    mock_client = MagicMock()
+    mock_client.get_order_book.side_effect = Exception("clob unavailable")
+
+    with patch.object(pc, "_get_client", return_value=mock_client):
+        with pytest.raises(Exception, match="clob unavailable"):
+            pc.get_orderbook_snapshot("token-123")
+
+
+def test_get_orderbook_snapshot_empty_book_returns_empty_lists(monkeypatch):
+    for k, v in _CREDS.items():
+        monkeypatch.setenv(k, v)
+
+    mock_client = MagicMock()
+    mock_client.get_order_book.return_value = _make_book()  # no asks, no bids
+
+    with patch.object(pc, "_get_client", return_value=mock_client):
+        snap = pc.get_orderbook_snapshot("token-123")
+
+    assert snap == {"asks": [], "bids": []}

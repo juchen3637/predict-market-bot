@@ -268,6 +268,61 @@ def get_order(order_id: str, use_demo: bool = True) -> dict[str, Any]:
 _ORDERBOOK_PATH_TPL = "/trade-api/v2/markets/{ticker}/orderbook"
 
 
+def _legacy_to_dollar_tuples(levels: list | None) -> list[tuple[float, float]]:
+    """Normalize legacy [[cents, count], ...] levels to [(decimal_price, dollars), ...]."""
+    if not levels:
+        return []
+    out = []
+    for price_cents, count in levels:
+        price = int(price_cents) / 100.0
+        out.append((price, price * int(count)))
+    return out
+
+
+def get_orderbook_snapshot(
+    market_ticker: str,
+    *,
+    use_demo: bool = True,
+) -> dict[str, list[tuple[float, float]]]:
+    """
+    Fetch Kalshi orderbook and return a normalized snapshot.
+
+    Returns {"yes_bids": [(price, dollars)], "no_bids": [(price, dollars)]}.
+    Both YES and NO arrays are BIDS — Kalshi has no offers; a BUY at limit L
+    crosses the OPPOSITE side's bids at price >= (1 - L).
+
+    Returns empty arrays when credentials are missing. Raises on HTTP error
+    so callers can apply their own fail-open / fail-closed policy.
+    """
+    ob_path = _ORDERBOOK_PATH_TPL.format(ticker=market_ticker)
+    headers = _get_demo_headers("GET", ob_path) if use_demo else _get_headers("GET", ob_path)
+    if headers is None:
+        return {"yes_bids": [], "no_bids": []}
+
+    base_url = KALSHI_DEMO_URL if use_demo else KALSHI_BASE_URL
+    with httpx.Client(timeout=15.0) as client:
+        resp = client.get(
+            f"{base_url}/markets/{market_ticker}/orderbook",
+            headers=headers,
+            params={"depth": 10},
+        )
+    resp.raise_for_status()
+    data = resp.json()
+
+    ob_fp = data.get("orderbook_fp") or {}
+    if ob_fp:
+        return {
+            "yes_bids": [(float(p), float(d)) for p, d in (ob_fp.get("yes_dollars") or [])],
+            "no_bids":  [(float(p), float(d)) for p, d in (ob_fp.get("no_dollars") or [])],
+        }
+
+    orderbook = data.get("orderbook") or {}
+    return {
+        "yes_bids": _legacy_to_dollar_tuples(orderbook.get("yes")),
+        "no_bids":  _legacy_to_dollar_tuples(orderbook.get("no")),
+    }
+
+
 def get_depth(
     market_ticker: str,
     direction: str,
@@ -277,55 +332,27 @@ def get_depth(
 ) -> bool:
     """
     Check if the Kalshi orderbook has sufficient liquidity to fill `contracts`
-    of `direction` at limit `limit_price`.
-
-    Kalshi's orderbook stores YES and NO BIDS (no offers). To BUY direction at
-    limit L, the matching counterparty is a bidder on the OPPOSITE side at
-    price >= (1 - L), since BUY YES @ L = SELL NO @ (1 - L) and vice versa.
+    of `direction` at limit `limit_price`. Fails open on HTTP errors.
     """
     ob_path = _ORDERBOOK_PATH_TPL.format(ticker=market_ticker)
     headers = _get_demo_headers("GET", ob_path) if use_demo else _get_headers("GET", ob_path)
     if headers is None:
         return True  # credential-missing fallback: pass through
 
-    base_url = KALSHI_DEMO_URL if use_demo else KALSHI_BASE_URL
     cross_price = 1.0 - limit_price
     if cross_price <= 0:
-        return False  # limit_price >= 1.0 cannot be filled
-    cross_cents = int(round(cross_price * 100))
-    opposite = "no" if direction == "yes" else "yes"
+        return False
 
     try:
-        with httpx.Client(timeout=15.0) as client:
-            resp = client.get(
-                f"{base_url}/markets/{market_ticker}/orderbook",
-                headers=headers,
-                params={"depth": 10},
-            )
-        resp.raise_for_status()
-
-        data = resp.json()
-
-        # New API format: orderbook_fp with decimal prices and dollar amounts
-        ob_fp = data.get("orderbook_fp", {})
-        if ob_fp:
-            key = f"{opposite}_dollars"
-            levels = ob_fp.get(key, [])
-            total_dollars = sum(
-                float(lvl[1]) for lvl in (levels or []) if float(lvl[0]) >= cross_price
-            )
-            available_contracts = total_dollars / cross_price
-            return available_contracts >= contracts
-
-        # Fallback: legacy orderbook format with integer cents and contract counts
-        orderbook = data.get("orderbook", {})
-        levels = orderbook.get(opposite, [])
-        total = sum(lvl[1] for lvl in (levels or []) if lvl[0] >= cross_cents)
-        return total >= contracts
-
+        snapshot = get_orderbook_snapshot(market_ticker, use_demo=use_demo)
     except Exception as e:
         print(
             f"[pm-risk] Kalshi depth check error for {market_ticker}: {e}. Passing through.",
             file=sys.stderr,
         )
         return True  # fail open
+
+    opposite = "no" if direction == "yes" else "yes"
+    levels = snapshot[f"{opposite}_bids"]
+    total_dollars = sum(dollars for price, dollars in levels if price >= cross_price)
+    return (total_dollars / cross_price) >= contracts
