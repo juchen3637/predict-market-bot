@@ -213,6 +213,34 @@ class TestReportRecentRuns:
         lines = ds.report_recent_runs(tmp_path)
         assert any("no manifests" in l for l in lines)
 
+    def test_displays_liquidity_probe_when_present(self, tmp_path):
+        (tmp_path / "data" / "runs").mkdir(parents=True)
+        manifest = {
+            "run_id": "20260427T120000",
+            "status": "completed",
+            "trades_placed": 0,
+            "stages": {
+                "scan": {
+                    "status": "completed",
+                    "liquidity_probe": {
+                        "probed": 50, "kept": 12, "dropped_thin": 36,
+                        "dropped_fetch_error": 2, "skipped_below_rank": 0,
+                    },
+                },
+                "research": {"status": "completed"},
+                "predict": {"status": "completed"},
+                "risk": {"status": "completed"},
+            },
+        }
+        (tmp_path / "data" / "runs" / "run_20260427T120000.json").write_text(json.dumps(manifest))
+        joined = "\n".join(ds.report_recent_runs(tmp_path))
+        assert "probe: 12/50 kept" in joined
+
+    def test_omits_liquidity_probe_when_absent(self, synthetic_root):
+        """Manifest without probe block should not produce a probe: line."""
+        joined = "\n".join(ds.report_recent_runs(synthetic_root))
+        assert "probe:" not in joined
+
 
 class TestReportTradeLog:
     def test_counts_by_status_and_rejection(self, synthetic_root):

@@ -150,9 +150,13 @@ def report_recent_runs(root: Path, limit: int = 5) -> list[str]:
             f"{name}={stages.get(name, {}).get('status', '?')}"
             for name in ("scan", "research", "predict", "risk")
         )
+        probe = stages.get("scan", {}).get("liquidity_probe") if isinstance(stages.get("scan"), dict) else None
+        probe_clause = ""
+        if probe and probe.get("probed", 0) > 0:
+            probe_clause = f" (probe: {probe.get('kept', 0)}/{probe.get('probed', 0)} kept)"
         lines.append(
             f"  {manifest.get('run_id', f.stem)}: "
-            f"status={status}  trades={trades}  [{stage_summary}]"
+            f"status={status}  trades={trades}  [{stage_summary}]{probe_clause}"
         )
         # Surface any stage errors
         for name, info in stages.items():

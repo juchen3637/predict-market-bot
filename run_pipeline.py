@@ -411,9 +411,13 @@ def _update_stage(manifest: dict, stage: str, **updates) -> dict:
 def _extract_scan_counts(data: bytes) -> dict:
     try:
         d = json.loads(data)
-        return {"candidates": len(d.get("candidates", []))}
     except Exception:
         return {"candidates": 0}
+    counts = {"candidates": len(d.get("candidates", []))}
+    probe = d.get("liquidity_probe")
+    if probe:
+        counts["liquidity_probe"] = probe
+    return counts
 
 
 def _extract_research_counts(data: bytes) -> dict:

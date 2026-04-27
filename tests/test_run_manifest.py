@@ -195,6 +195,26 @@ class TestExtractScanCounts:
         result = _extract_scan_counts(b"")
         assert result == {"candidates": 0}
 
+    def test_liquidity_probe_block_passes_through(self):
+        """When the scan stage reports a liquidity_probe block, it lands in the manifest."""
+        probe = {
+            "probed": 50,
+            "kept": 12,
+            "dropped_thin": 36,
+            "dropped_fetch_error": 2,
+            "skipped_below_rank": 0,
+        }
+        data = json.dumps({"candidates": [], "liquidity_probe": probe}).encode()
+        result = _extract_scan_counts(data)
+        assert result == {"candidates": 0, "liquidity_probe": probe}
+
+    def test_no_liquidity_probe_key_omitted(self):
+        """Older scan output without the probe block doesn't surface a stale key."""
+        data = json.dumps({"candidates": [{"id": "a"}]}).encode()
+        result = _extract_scan_counts(data)
+        assert result == {"candidates": 1}
+        assert "liquidity_probe" not in result
+
 
 # ---------------------------------------------------------------------------
 # _extract_research_counts
