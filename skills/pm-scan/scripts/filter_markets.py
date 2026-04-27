@@ -70,6 +70,89 @@ class MarketCandidate:
 
 
 # ---------------------------------------------------------------------------
+# HTTP retry with exponential backoff
+# ---------------------------------------------------------------------------
+
+_RETRY_STATUS_CODES = {500, 502, 503, 504, 522, 524}
+_RETRY_BACKOFFS = (2.0, 6.0, 18.0)  # total 4 attempts (initial + 3 retries)
+
+
+def _is_transient_http_error(exc: BaseException) -> bool:
+    """True for network-level errors we should retry (DNS/connect/timeout)."""
+    if isinstance(exc, (
+        httpx.ConnectError,
+        httpx.ConnectTimeout,
+        httpx.ReadTimeout,
+        httpx.WriteTimeout,
+        httpx.PoolTimeout,
+        httpx.RemoteProtocolError,
+    )):
+        return True
+    # httpx wraps DNS failures in ConnectError whose str contains "name resolution"
+    msg = str(exc).lower()
+    return (
+        "name resolution" in msg
+        or "temporary failure" in msg
+        or "connection refused" in msg
+        or "connection reset" in msg
+    )
+
+
+def _get_with_retry(
+    client: httpx.Client,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    params: dict[str, Any] | None = None,
+    header_factory: Any = None,
+    label: str = "http",
+) -> httpx.Response:
+    """
+    GET with exponential backoff on DNS / connect / 5xx errors.
+
+    Kalshi requires a fresh signed timestamp on every attempt, so callers pass
+    `header_factory` (a 0-arg callable) instead of `headers`. Polymarket passes
+    `headers=None`.
+
+    Raises the final exception if all attempts fail.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(len(_RETRY_BACKOFFS) + 1):
+        try:
+            effective_headers = header_factory() if header_factory else headers
+            resp = client.get(url, headers=effective_headers, params=params)
+            if resp.status_code in _RETRY_STATUS_CODES:
+                if attempt < len(_RETRY_BACKOFFS):
+                    delay = _RETRY_BACKOFFS[attempt]
+                    print(
+                        f"[scan-retry] {label}: HTTP {resp.status_code}, "
+                        f"retry {attempt + 1}/{len(_RETRY_BACKOFFS)} in {delay}s",
+                        file=sys.stderr,
+                    )
+                    time.sleep(delay)
+                    continue
+                # Out of retries — let raise_for_status bubble 5xx up
+                resp.raise_for_status()
+            resp.raise_for_status()
+            return resp
+        except Exception as exc:  # noqa: BLE001
+            if not _is_transient_http_error(exc) or attempt >= len(_RETRY_BACKOFFS):
+                raise
+            last_exc = exc
+            delay = _RETRY_BACKOFFS[attempt]
+            print(
+                f"[scan-retry] {label}: {type(exc).__name__}: {exc} — "
+                f"retry {attempt + 1}/{len(_RETRY_BACKOFFS)} in {delay}s",
+                file=sys.stderr,
+            )
+            time.sleep(delay)
+    # Unreachable — loop either returns or raises — but mypy wants this
+    if last_exc:
+        raise last_exc
+    raise RuntimeError(f"{label}: retry loop exited without a response")
+
+
+# ---------------------------------------------------------------------------
 # Platform Clients (stubs — implement after API access confirmed in Phase 0)
 # ---------------------------------------------------------------------------
 
@@ -103,8 +186,12 @@ def fetch_polymarket_markets(
                 "limit": page_size,
                 "offset": offset,
             }
-            resp = client.get(f"{base_url}/markets", params=params)
-            resp.raise_for_status()
+            resp = _get_with_retry(
+                client,
+                f"{base_url}/markets",
+                params=params,
+                label="polymarket",
+            )
             markets = resp.json()
             if not isinstance(markets, list) or not markets:
                 break
@@ -187,9 +274,13 @@ def fetch_kalshi_markets(
                 "limit": 100,
                 "series_ticker": series,
             }
-            headers = _kalshi_headers("GET", path)
-            resp = client.get(f"{base_url}/markets", headers=headers, params=params)
-            resp.raise_for_status()
+            resp = _get_with_retry(
+                client,
+                f"{base_url}/markets",
+                header_factory=lambda: _kalshi_headers("GET", path),
+                params=params,
+                label=f"kalshi:{series}",
+            )
             all_markets.extend(resp.json().get("markets", []))
             time.sleep(0.15)  # stay under 10 req/s
 
