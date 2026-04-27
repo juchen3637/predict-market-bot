@@ -21,13 +21,31 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import yaml
 
 from check_depth import has_adequate_depth
 
-STOP_FILE = Path(__file__).parent.parent.parent.parent / "STOP"
-TRADE_LOG = Path(__file__).parent.parent.parent.parent / "data" / "trade_log.jsonl"
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent
+STOP_FILE = _PROJECT_ROOT / "STOP"
+TRADE_LOG = _PROJECT_ROOT / "data" / "trade_log.jsonl"
 MAX_SLIPPAGE = 0.02   # 2% — abort if fill deviates more than this
 HEDGE_TRIGGER = 0.05  # 5% — flag for hedge review after fill
+
+
+def _scan_liquidity_floor_tag() -> str | None:
+    """Tag trades placed while the scan-time liquidity floor is enabled.
+
+    Returns "v1" when scan.liquidity_check_enabled is True; otherwise None.
+    Lets nightly metrics segment "post-floor" trades from historical ones.
+    """
+    try:
+        with open(_PROJECT_ROOT / "config" / "settings.yaml") as f:
+            settings = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    if settings.get("scan", {}).get("liquidity_check_enabled"):
+        return "v1"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +75,7 @@ class TradeRecord:
     hedge_needed: bool = False  # set if market moved >5% from entry after fill
     hedge_order_id: str | None = None  # order_id of the hedge order, if placed
     order_id: str | None = None  # platform order_id for later status checks
+    scan_liquidity_floor: str | None = None  # "v1" if placed under the scan-time floor
 
 
 # ---------------------------------------------------------------------------
@@ -202,6 +221,7 @@ def execute(
         resolved_at=None,
         outcome=None,
         pnl=None,
+        scan_liquidity_floor=_scan_liquidity_floor_tag(),
     )
 
     # Final kill switch check

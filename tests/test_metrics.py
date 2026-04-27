@@ -307,3 +307,79 @@ def test_filter_live_trades():
 def test_filter_empty():
     assert filter_trades_by_mode([], "paper") == []
     assert filter_trades_by_mode([], "live") == []
+
+
+# ---------------------------------------------------------------------------
+# Post-floor metric segments — only trades with scan_liquidity_floor == "v1"
+# ---------------------------------------------------------------------------
+
+def _v1_trade(*, status: str, outcome: str, pnl: float, resolved_day: int) -> dict:
+    t = _make_trade(
+        outcome=outcome, pnl=pnl,
+        resolved_at=f"2026-03-{resolved_day:02d}T23:00:00+00:00",
+        status=status,
+    )
+    t["scan_liquidity_floor"] = "v1"
+    return t
+
+
+def test_compute_metrics_emits_paper_post_floor_when_5plus_v1_trades(tmp_path, monkeypatch):
+    """5 v1 paper trades → metrics.paper_post_floor present."""
+    monkeypatch.setenv("BANKROLL_USD", "100")
+    trades = [_v1_trade(status="paper", outcome="win", pnl=2.0, resolved_day=10 + i) for i in range(5)]
+    trade_log = tmp_path / "trade_log.jsonl"
+    _write_trade_log(trade_log, trades)
+
+    import metrics as _m
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_m, "METRICS_PATH", tmp_path / "m.json")
+        mp.setattr(_m, "METRICS_HISTORY_PATH", tmp_path / "h.jsonl")
+        from unittest.mock import patch
+        with patch("metrics.compute_rolling_brier", return_value={"brier_score": 0.20}):
+            result = compute_metrics(trade_log_path=trade_log)
+
+    assert "paper_post_floor" in result
+    assert result["paper_post_floor"]["trade_count"] == 5
+    assert result["paper_post_floor"]["win_rate"] == pytest.approx(1.0)
+
+
+def test_compute_metrics_omits_post_floor_when_under_5_v1_trades(tmp_path, monkeypatch):
+    """4 v1 trades → not enough signal; the segment is omitted, not zero-reported."""
+    monkeypatch.setenv("BANKROLL_USD", "100")
+    trades = [_v1_trade(status="paper", outcome="win", pnl=2.0, resolved_day=10 + i) for i in range(4)]
+    trade_log = tmp_path / "trade_log.jsonl"
+    _write_trade_log(trade_log, trades)
+
+    import metrics as _m
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_m, "METRICS_PATH", tmp_path / "m.json")
+        mp.setattr(_m, "METRICS_HISTORY_PATH", tmp_path / "h.jsonl")
+        from unittest.mock import patch
+        with patch("metrics.compute_rolling_brier", return_value={"brier_score": 0.20}):
+            result = compute_metrics(trade_log_path=trade_log)
+
+    assert "paper_post_floor" not in result
+    assert "live_post_floor" not in result
+
+
+def test_compute_metrics_post_floor_filters_by_v1_only(tmp_path, monkeypatch):
+    """Pre-floor trades (no scan_liquidity_floor key) excluded from post_floor."""
+    monkeypatch.setenv("BANKROLL_USD", "100")
+    pre_floor = [_make_trade(outcome="loss", pnl=-1.0, resolved_at=f"2026-03-1{i}T23:00:00+00:00",
+                              status="placed") for i in range(5)]
+    post_floor = [_v1_trade(status="placed", outcome="win", pnl=2.0, resolved_day=20 + i) for i in range(5)]
+    trade_log = tmp_path / "trade_log.jsonl"
+    _write_trade_log(trade_log, pre_floor + post_floor)
+
+    import metrics as _m
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(_m, "METRICS_PATH", tmp_path / "m.json")
+        mp.setattr(_m, "METRICS_HISTORY_PATH", tmp_path / "h.jsonl")
+        from unittest.mock import patch
+        with patch("metrics.compute_rolling_brier", return_value={"brier_score": 0.20}):
+            result = compute_metrics(trade_log_path=trade_log)
+
+    # Live includes all 10; live_post_floor only the 5 v1 wins
+    assert result["live"]["trade_count"] == 10
+    assert result["live_post_floor"]["trade_count"] == 5
+    assert result["live_post_floor"]["win_rate"] == pytest.approx(1.0)

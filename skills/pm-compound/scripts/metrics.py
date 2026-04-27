@@ -242,6 +242,17 @@ def compute_metrics(
         "live": live_metrics,
     }
 
+    # Post-floor segment: only include trades placed while the scan-time
+    # liquidity floor was active. Skip the section entirely when there's not
+    # enough sample (<5 trades) — the historical "live" / "paper" snapshots
+    # remain authoritative until a meaningful post-floor sample exists.
+    paper_post_floor = [t for t in paper_trades if t.get("scan_liquidity_floor") == "v1"]
+    live_post_floor = [t for t in live_trades if t.get("scan_liquidity_floor") == "v1"]
+    if len(paper_post_floor) >= 5:
+        result["paper_post_floor"] = _compute_metrics_for_trades(paper_post_floor, bankroll)
+    if len(live_post_floor) >= 5:
+        result["live_post_floor"] = _compute_metrics_for_trades(live_post_floor, bankroll)
+
     if not all_trades:
         result["message"] = "No resolved trades"
         DATA_DIR.mkdir(exist_ok=True)

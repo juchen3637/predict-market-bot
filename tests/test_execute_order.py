@@ -264,3 +264,71 @@ def test_zero_contracts_rejected(signal, tmp_path, monkeypatch):
 
     assert record.status == "rejected"
     assert record.rejection_reason == "zero_contracts"
+
+
+# ---------------------------------------------------------------------------
+# scan_liquidity_floor boundary marker
+# ---------------------------------------------------------------------------
+
+def test_scan_liquidity_floor_v1_when_enabled(signal, position, tmp_path, monkeypatch):
+    monkeypatch.setattr(eo, "STOP_FILE", tmp_path / "STOP")
+    monkeypatch.setattr(eo, "TRADE_LOG", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr(eo, "_scan_liquidity_floor_tag", lambda: "v1")
+    monkeypatch.setenv("PAPER_TRADING", "true")
+
+    record = eo.execute(signal, position)
+
+    assert record.scan_liquidity_floor == "v1"
+
+
+def test_scan_liquidity_floor_none_when_disabled(signal, position, tmp_path, monkeypatch):
+    monkeypatch.setattr(eo, "STOP_FILE", tmp_path / "STOP")
+    monkeypatch.setattr(eo, "TRADE_LOG", tmp_path / "trade_log.jsonl")
+    monkeypatch.setattr(eo, "_scan_liquidity_floor_tag", lambda: None)
+    monkeypatch.setenv("PAPER_TRADING", "true")
+
+    record = eo.execute(signal, position)
+
+    assert record.scan_liquidity_floor is None
+
+
+def test_scan_liquidity_floor_persisted_to_trade_log(signal, position, tmp_path, monkeypatch):
+    log_path = tmp_path / "trade_log.jsonl"
+    monkeypatch.setattr(eo, "STOP_FILE", tmp_path / "STOP")
+    monkeypatch.setattr(eo, "TRADE_LOG", log_path)
+    monkeypatch.setattr(eo, "_scan_liquidity_floor_tag", lambda: "v1")
+    monkeypatch.setenv("PAPER_TRADING", "true")
+
+    eo.execute(signal, position)
+
+    rows = [json.loads(l) for l in log_path.read_text().splitlines()]
+    assert rows[0]["scan_liquidity_floor"] == "v1"
+
+
+def test_scan_liquidity_floor_tag_reads_settings_yaml(tmp_path, monkeypatch):
+    """Helper reads scan.liquidity_check_enabled from settings.yaml at the project root."""
+    settings_dir = tmp_path / "config"
+    settings_dir.mkdir()
+    settings_dir.joinpath("settings.yaml").write_text(
+        "scan:\n  liquidity_check_enabled: true\n"
+    )
+    monkeypatch.setattr(eo, "_PROJECT_ROOT", tmp_path)
+
+    assert eo._scan_liquidity_floor_tag() == "v1"
+
+
+def test_scan_liquidity_floor_tag_returns_none_when_disabled(tmp_path, monkeypatch):
+    settings_dir = tmp_path / "config"
+    settings_dir.mkdir()
+    settings_dir.joinpath("settings.yaml").write_text(
+        "scan:\n  liquidity_check_enabled: false\n"
+    )
+    monkeypatch.setattr(eo, "_PROJECT_ROOT", tmp_path)
+
+    assert eo._scan_liquidity_floor_tag() is None
+
+
+def test_scan_liquidity_floor_tag_returns_none_on_io_error(tmp_path, monkeypatch):
+    """Missing settings.yaml → defensive None, not a crash."""
+    monkeypatch.setattr(eo, "_PROJECT_ROOT", tmp_path)  # no config dir at all
+    assert eo._scan_liquidity_floor_tag() is None
