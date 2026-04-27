@@ -477,6 +477,139 @@ def deprioritize_known_failures(
 
 
 # ---------------------------------------------------------------------------
+# Liquidity Floor — scan-time depth probe
+#
+# Most rejections at the risk stage come from candidates whose orderbook
+# can't actually fill a Kelly-sized order. Probing depth here drops them
+# before research/predict spend any money on signals that won't trade.
+# ---------------------------------------------------------------------------
+
+def _fetch_kalshi_snapshot(market_id: str, *, use_demo: bool = True) -> dict:
+    """Indirection so tests can monkeypatch without a live Kalshi connection."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../pm-risk/scripts"))
+    import kalshi_client  # noqa: PLC0415
+    return kalshi_client.get_orderbook_snapshot(market_id, use_demo=use_demo)
+
+
+def _fetch_polymarket_snapshot(market_id: str, *, use_demo: bool = False) -> dict:
+    """Indirection so tests can monkeypatch without a live Polymarket connection."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../pm-risk/scripts"))
+    import polymarket_client  # noqa: PLC0415
+    return polymarket_client.get_orderbook_snapshot(market_id, use_demo=use_demo)
+
+
+def _candidate_mid(candidate: MarketCandidate) -> float:
+    """mid = (yes_bid + yes_ask) / 2 when both > 0, else current_yes_price."""
+    if candidate.yes_bid > 0 and candidate.yes_ask > 0:
+        return (candidate.yes_bid + candidate.yes_ask) / 2.0
+    return candidate.current_yes_price
+
+
+def passes_liquidity_floor(
+    candidate: MarketCandidate,
+    snapshot: dict,
+    *,
+    min_dollars: float,
+    band: float,
+) -> bool:
+    """
+    Return True iff cross-side depth >= floor for BOTH directions.
+
+    Kalshi orderbook (yes_bids / no_bids are BIDS):
+      - BUY YES at mid crosses no_bids at price >= (1 - mid - band).
+      - BUY NO  at mid crosses yes_bids at price >= (1 - mid - band).
+
+    Polymarket orderbook (asks / bids):
+      - BUY YES at mid crosses asks at price <= (mid + band); dollars = price * size.
+      - BUY NO  at mid crosses bids at price >= (1 - mid - band); NO-dollars = (1-price) * size.
+
+    Worst-side wins because the bot may signal in either direction.
+    """
+    mid = _candidate_mid(candidate)
+    cross_threshold = max(0.0, 1.0 - mid - band)
+
+    if candidate.platform == "kalshi":
+        buy_no_dollars = sum(
+            d for p, d in (snapshot.get("yes_bids") or []) if p >= cross_threshold
+        )
+        buy_yes_dollars = sum(
+            d for p, d in (snapshot.get("no_bids") or []) if p >= cross_threshold
+        )
+    elif candidate.platform == "polymarket":
+        ask_ceiling = mid + band
+        buy_yes_dollars = sum(
+            p * s for p, s in (snapshot.get("asks") or []) if p <= ask_ceiling
+        )
+        buy_no_dollars = sum(
+            (1.0 - p) * s for p, s in (snapshot.get("bids") or []) if p >= cross_threshold
+        )
+    else:
+        return False
+
+    return min(buy_yes_dollars, buy_no_dollars) >= min_dollars
+
+
+def _apply_liquidity_floor(
+    candidates: list[MarketCandidate],
+    *,
+    min_dollars: float,
+    band: float,
+    top_n: int,
+) -> tuple[list[MarketCandidate], dict[str, int]]:
+    """
+    Probe orderbook depth on the top-N candidates; drop those that fail the
+    floor or whose snapshot fetch raises. Returns (kept, stats).
+    """
+    stats = {
+        "probed": 0,
+        "kept": 0,
+        "dropped_thin": 0,
+        "dropped_fetch_error": 0,
+        "skipped_below_rank": 0,
+    }
+    if not candidates:
+        return [], stats
+
+    head = candidates[:top_n]
+    tail = candidates[top_n:]
+    stats["skipped_below_rank"] = len(tail)
+    if tail:
+        print(
+            f"[scan] liquidity probe skipped {len(tail)} below-rank candidates",
+            file=sys.stderr,
+        )
+
+    kept: list[MarketCandidate] = []
+    for candidate in head:
+        stats["probed"] += 1
+        try:
+            if candidate.platform == "kalshi":
+                snapshot = _fetch_kalshi_snapshot(candidate.market_id)
+            elif candidate.platform == "polymarket":
+                snapshot = _fetch_polymarket_snapshot(candidate.market_id)
+            else:
+                stats["dropped_fetch_error"] += 1
+                continue
+        except Exception as exc:
+            print(
+                f"[scan] depth probe failed for {candidate.market_id}: {exc}",
+                file=sys.stderr,
+            )
+            stats["dropped_fetch_error"] += 1
+            time.sleep(0.15)
+            continue
+
+        if passes_liquidity_floor(candidate, snapshot, min_dollars=min_dollars, band=band):
+            kept.append(candidate)
+            stats["kept"] += 1
+        else:
+            stats["dropped_thin"] += 1
+        time.sleep(0.15)
+
+    return kept, stats
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -534,12 +667,30 @@ def main() -> None:
     # Deprioritize candidates matching known failure patterns from pm-compound
     ranked = deprioritize_known_failures(ranked)
 
+    liquidity_probe: dict[str, int] | None = None
+    if scan_cfg.get("liquidity_check_enabled", False):
+        ranked, liquidity_probe = _apply_liquidity_floor(
+            ranked,
+            min_dollars=float(scan_cfg.get("min_cross_side_dollars", 200)),
+            band=float(scan_cfg.get("cross_side_band_cents", 5)) / 100.0,
+            top_n=int(scan_cfg.get("liquidity_check_top_n", 50)),
+        )
+        print(
+            f"[scan] liquidity probe: {liquidity_probe['kept']}/{liquidity_probe['probed']} kept "
+            f"(thin={liquidity_probe['dropped_thin']}, "
+            f"err={liquidity_probe['dropped_fetch_error']}, "
+            f"skipped={liquidity_probe['skipped_below_rank']})",
+            file=sys.stderr,
+        )
+
     output = {
         "candidates": [asdict(c) for c in ranked],
         "scan_id": f"scan_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}",
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "errors": errors,
     }
+    if liquidity_probe is not None:
+        output["liquidity_probe"] = liquidity_probe
     print(json.dumps(output, indent=2))
 
 

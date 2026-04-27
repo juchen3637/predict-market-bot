@@ -21,6 +21,10 @@ scan:
   anomaly_price_move_pct: 0.10       # Flag if price moved >10% recently
   anomaly_spread_cents: 0.05         # Flag if bid-ask spread >5 cents
   anomaly_volume_spike_multiplier: 3 # Flag if volume > 3x 7-day average
+  liquidity_check_enabled: true      # Probe orderbook depth on each scanned candidate; emergency rollback only
+  min_cross_side_dollars: 200        # Drop candidates with < $200 of fillable depth on the worse-side
+  cross_side_band_cents: 5           # Look at bids within this many cents of the cross price
+  liquidity_check_top_n: 50          # Cap the depth-probe budget at top-N candidates by rank
 
 research:
   max_source_chars: 2000             # Truncate scraped content to this length
