@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,11 @@ from typing import Any
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _COST_LOG = _PROJECT_ROOT / "data" / "ai_costs.jsonl"
+
+# Serializes appends from concurrent research/predict workers. POSIX O_APPEND
+# makes small writes atomic per-syscall, but we go through the with-block /
+# Python buffering, so explicit locking keeps the guarantee portable.
+_COST_LOG_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +90,9 @@ def record_cost(
         "caller": caller,
     }
     _COST_LOG.parent.mkdir(parents=True, exist_ok=True)
-    with open(_COST_LOG, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    with _COST_LOG_LOCK:
+        with open(_COST_LOG, "a") as f:
+            f.write(json.dumps(entry) + "\n")
     return cost
 
 

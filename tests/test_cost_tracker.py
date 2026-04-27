@@ -162,3 +162,45 @@ def test_check_budget_missing_cost_control_section(tmp_path):
     with patch("cost_tracker._COST_LOG", log_file):
         # No cost_control key → defaults to $30 limit, no spend → should not raise
         check_budget({})
+
+
+# ---------------------------------------------------------------------------
+# Concurrent record_cost — Fix H1: thread-safety under research ThreadPoolExecutor
+# ---------------------------------------------------------------------------
+
+def test_record_cost_concurrent_writes_not_corrupted(tmp_path):
+    """50 threads x 20 writes each → 1000 well-formed JSONL lines, no interleaving."""
+    import threading
+
+    log_file = tmp_path / "ai_costs.jsonl"
+    with patch("cost_tracker._COST_LOG", log_file):
+        num_threads = 50
+        writes_per_thread = 20
+        barrier = threading.Barrier(num_threads)
+
+        def worker(tid: int) -> None:
+            barrier.wait()  # maximize contention
+            for j in range(writes_per_thread):
+                record_cost(
+                    "claude-haiku-4-5-20251001",
+                    input_tokens=100 + tid,
+                    output_tokens=10 + j,
+                    caller=f"t{tid}-call{j}",
+                )
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(num_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        lines = log_file.read_text().splitlines()
+        assert len(lines) == num_threads * writes_per_thread, (
+            f"expected {num_threads * writes_per_thread} lines, got {len(lines)}"
+        )
+        callers = set()
+        for line in lines:
+            entry = json.loads(line)  # will raise on corruption
+            callers.add(entry["caller"])
+        # Every (tid, call_idx) pair must be present exactly once
+        assert len(callers) == num_threads * writes_per_thread

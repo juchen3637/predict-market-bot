@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,6 +238,76 @@ def process_candidate(
 
 
 # ---------------------------------------------------------------------------
+# Parallel dispatch
+# ---------------------------------------------------------------------------
+
+def _process_candidates_parallel(
+    candidates: list[dict[str, Any]],
+    min_sources_required: int,
+    confidence_threshold: float,
+    ttl_hours: float,
+    max_workers: int,
+) -> list[dict[str, Any]]:
+    """
+    Run process_candidate across candidates with bounded parallelism.
+
+    Preserves input order in the returned list. Falls back to serial execution
+    when max_workers <= 1.
+    """
+    total = len(candidates)
+    if max_workers <= 1 or total <= 1:
+        results: list[dict[str, Any]] = []
+        for i, candidate in enumerate(candidates, 1):
+            market_id = candidate.get("market_id", f"unknown_{i}")
+            print(f"[pm-research] [{i}/{total}] {market_id}", file=sys.stderr)
+            results.append(
+                process_candidate(
+                    candidate, min_sources_required, confidence_threshold, ttl_hours
+                )
+            )
+        return results
+
+    results_by_index: dict[int, dict[str, Any]] = {}
+    completed = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_index = {
+            executor.submit(
+                process_candidate,
+                candidate,
+                min_sources_required,
+                confidence_threshold,
+                ttl_hours,
+            ): idx
+            for idx, candidate in enumerate(candidates)
+        }
+        for future in as_completed(future_to_index):
+            idx = future_to_index[future]
+            candidate = candidates[idx]
+            market_id = candidate.get("market_id", f"unknown_{idx + 1}")
+            completed += 1
+            try:
+                results_by_index[idx] = future.result()
+                print(
+                    f"[pm-research] [{completed}/{total}] done: {market_id}",
+                    file=sys.stderr,
+                )
+            except Exception as exc:
+                print(
+                    f"[pm-research] [{completed}/{total}] {market_id}: "
+                    f"worker raised {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                results_by_index[idx] = {
+                    **candidate,
+                    "sentiment": None,
+                    "gap_analysis": None,
+                    "research_skipped": True,
+                    "skip_reason": f"worker error: {type(exc).__name__}: {exc}",
+                }
+    return [results_by_index[i] for i in range(total)]
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -256,6 +327,9 @@ def main() -> None:
     min_sources_required: int = research_cfg["min_sources_required"]
     confidence_threshold: float = research_cfg["sentiment_confidence_threshold"]
     ttl_hours: float = float(research_cfg.get("cache_ttl_hours", 4))
+    parallel_workers: int = int(
+        settings.get("pipeline", {}).get("research_parallel_workers", 1)
+    )
 
     # Read pm-scan output from --input file or stdin
     try:
@@ -276,16 +350,18 @@ def main() -> None:
         sys.exit(0)
 
     print(
-        f"[pm-research] Processing {len(candidates)} candidates (scan_id={scan_id})",
+        f"[pm-research] Processing {len(candidates)} candidates "
+        f"(scan_id={scan_id}, workers={parallel_workers})",
         file=sys.stderr,
     )
 
-    enriched_candidates = []
-    for i, candidate in enumerate(candidates, 1):
-        market_id = candidate.get("market_id", f"unknown_{i}")
-        print(f"[pm-research] [{i}/{len(candidates)}] {market_id}", file=sys.stderr)
-        enriched = process_candidate(candidate, min_sources_required, confidence_threshold, ttl_hours)
-        enriched_candidates.append(enriched)
+    enriched_candidates = _process_candidates_parallel(
+        candidates,
+        min_sources_required,
+        confidence_threshold,
+        ttl_hours,
+        parallel_workers,
+    )
 
     output = {
         "scan_id": scan_id,
